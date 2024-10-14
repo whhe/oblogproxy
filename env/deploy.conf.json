@@ -1,0 +1,12 @@
+{
+  "host": "",
+  "port": 0,
+  "user": "",
+  "password": "",
+  "database": "",
+  "sys_user": "",
+  "sys_password": "",
+  "supervise_start": "",
+  "init_schema": "",
+  "node_ip": ""
+}

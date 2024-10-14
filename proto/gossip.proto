@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package oceanbase.logproxy.gossip;
+
+option java_package = "com.oceanbase.clogproxy.common.packet.protocol";
+option java_outer_classname = "LogProxyProto";
+
+message Ping {
+  uint32 seq_no = 1;
+  string ip = 2;
+  uint32 port = 3;
+  string node = 4;
+  string source_node = 5;
+}
+
+message Pong {
+  uint32 seq_no = 1;
+  string meta = 2;
+}
+
+message IndirectPing {
+  uint32 seq_no = 1;
+  string ip = 2;
+  uint32 port = 3;
+  string node = 4;
+  string source_node = 5;
+  string source_address = 6;
+  string source_port = 7;
+}
+
+message Meet {
+  uint32 incarnation = 1;
+  string node = 2;
+  string address = 3;
+  uint32 port = 4;
+  string meta = 5;
+}
+
+message Suspect {
+  uint32 incarnation = 1;
+  string node = 2;
+  // 怀疑下线的节点
+  string suspect_node = 3;
+}
+
+message Offline {
+  uint32 incarnation = 1;
+  string node = 2;
+  // 判断下线的节点
+  string offline_node = 3;
+}
+
+enum State {
+  online = 0;
+  offline = 1;
+  suspect = 3;
+}
+
+message PushNodeState {
+  uint32 incarnation = 1;
+  string name = 2;
+  string address = 3;
+  uint32 port = 4;
+  string meta = 5;
+  State state = 6;
+}
+
+message PushPull {
+  uint64 nodes = 1;
+  repeated PushNodeState node_status = 2;
+  bool join = 3;
+}
+
+message MemoryStatus {
+  uint64 mem_total_size_mb = 1;
+  uint64 mem_used_size_mb = 2;
+  float mem_used_ratio = 3;
+};
+
+message CpuStatus {
+  uint32 cpu_count = 1;
+  float cpu_used_ratio = 2;
+};
+
+message DiskStatus {
+  // unit MB
+  uint64 disk_total_size_mb = 1;
+  // unit MB
+  uint64 disk_used_size_mb = 2;
+  float disk_used_ratio = 3;
+  uint64 disk_usage_size_process_mb = 4;
+};
+
+message NetworkStatus {
+  uint64 network_rx_bytes = 1;
+  uint64 network_wx_bytes = 2;
+};
+
+message LoadStatus {
+  float load_1 = 1;
+  float load_5 = 2;
+};
+
+message ProcessMetric {
+  uint64 pid = 1;
+  string client_id = 2;
+  MemoryStatus memory_status = 3;
+  CpuStatus cpu_status = 4;
+  DiskStatus disk_status = 5;
+  NetworkStatus network_status = 6;
+};
+
+message ProcessGroupMetric {
+  repeated ProcessMetric metric_group = 2;
+};
+
+message SysMetric {
+  string node = 1;
+  string ip = 2;
+  uint32 port = 3;
+  LoadStatus load_status = 4;
+  MemoryStatus memory_status = 5;
+  CpuStatus cpu_status = 6;
+  DiskStatus disk_status = 7;
+  NetworkStatus network_status = 8;
+  ProcessGroupMetric process_group_metric = 9;
+};
+
+message MetricDataMessage {
+  repeated SysMetric node_metric = 1;
+}
+

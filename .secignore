@@ -1,0 +1,72 @@
+##########################################################
+#            OBFlow Secret Scan Ignore List              #
+##########################################################
+# Above the segmentation lines there are suspected privacy information #
+# Please use the file name as the first line and the igored information #
+# should be started with space or tab #
+# Under the segmentation lines there are the folders which you need to ignore #
+##########################################################
+**
+  http://license.coscl.org.cn/MulanPubL-2.0
+  https://www.oceanbase.com
+  https://www.oceanbase.com/*
+  https://open.oceanbase.com
+  https://open.oceanbase.com/*
+  https://openwebapi.oceanbase.com
+  https://openwebapi.oceanbase.com/*
+  https://github.com/oceanbase/oceanbase
+  https://github.com/oceanbase/oceanbase/issues
+  https://github.com/oceanbase/*
+  http://mirrors.aliyun.com/oceanbase*
+  https://mirrors.aliyun.com/oceanbase*
+  https://github.com/google/*
+  https://github.com/*
+  https://cmake.org/*
+  https://facebook.github.io/*
+  http://mirrors.aliyun.com/*
+  https://mirrors.aliyun.com/*
+  http://mirror.centos.org/*
+  https://facebook.github.io/*
+  https://dev.mysql.com/*
+  https://sqlite.org/*
+  http://www.parashift.com/*
+  http://www.sqlserver-dba.com/*
+  http://torpedro.com/*
+  http://flex.sourceforge.net/*
+  https://www.gnu.org/*
+  http://torpedro.com/*
+  http://www.ex-parrot.com/*
+  https://brew.sh*
+  https://www.sqlite.org/*
+  http://dinosaur.compilertools.net/*
+  http://www.gnu.org/*
+  https://www.safaribooksonline.com/*
+  https://h20195.www2.hpe.com/*
+**/*.c
+  http://www.gnu.org/licenses/
+**/*.h
+  https://dev.mysql.com/*
+  https://www.openssl.org/*
+**/*.cpp
+  https://dev.mysql.com/*
+  https://www.openssl.org/*
+README.md
+  https://search.maven.org/*
+**/test/*.cpp
+  http://127.0.0.1:8080/*
+  https://www.gnu.org/software/libc/manual/html_node/Error-Codes.html
+  http://configserver.xxx.com/services?Action=ObRootServiceInfo&User_ID=x&UID=y&ObRegion=z
+--------------------------------------------------------
+# Should use GLOB wildcard to configure and analysis the ignored folder
+# The root patch should start with '/'
+/docs/**
+/README.md
+/LICENSE
+/LEGAL.md
+--------------------------------------------------------
+# Set the ignored fold to escape the Chinese scan by GLOB wildcard
+--------------------------------------------------------
+# Set md5 of pemFile string to filter
+# This section must be end up with '--------------------------------------------------------'!!!
+
+--------------------------------------------------------
