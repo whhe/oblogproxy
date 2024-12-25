@@ -19,7 +19,8 @@ oceanbase-ce-cdc-4.3.3.0-100000052024100711.el8.aarch64.rpm
 [tools]
 obdevtools-gcc9-9.3.0-52022092914.el8.aarch64.rpm
 obdevtools-flex-2.6.1-32023111015.el8.aarch64.rpm
-devdeps-openssl-static-1.0.1e-12022100422.el8.aarch64.rpm
+devdeps-openssl-static-1.1.1u-22023100710.el8.aarch64.rpm
 devdeps-libaio-0.3.112-12022092915.el8.aarch64.rpm
 devdeps-mariadb-connector-c-3.1.12-12022100422.el8.aarch64.rpm
 devdeps-oblogmsg-1.1-52024052811.el8.aarch64.rpm
+devdeps-prometheus-cpp-1.1.0-12024121911.el8.aarch64.rpm

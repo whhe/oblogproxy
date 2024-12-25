@@ -23,3 +23,4 @@ devdeps-openssl-static-1.0.1e-12022100422.el7.x86_64.rpm
 devdeps-libaio-0.3.112-12022092915.el7.x86_64.rpm
 devdeps-mariadb-connector-c-3.1.12-12022100422.el7.x86_64.rpm
 devdeps-oblogmsg-1.1-52024052811.el7.x86_64.rpm
+devdeps-prometheus-cpp-1.1.0-12024121911.el7.x86_64.rpm

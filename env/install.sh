@@ -12,7 +12,7 @@ if [ -z "${mode}" ]; then
 fi
 
 if [ -z "${deploy_path}" ]; then
-  deploy_path=/home/ds
+  deploy_path=/home/ds/oblogproxy
 fi
 #data_disk=/dev/vdb1
 
@@ -28,18 +28,18 @@ fi
 #  exit -1
 #fi
 
-if [ ! -d "${deploy_path}/oblogproxy" ]; then
-  echo "Not exist oblogproxy path: ${deploy_path}/oblogproxy"
-  exit -1
+set -x
+if [ "${deploy_path}" == "/home/ds/oblogproxy" ]; then
+  mkdir -p /home/ds/log
+else
+  mkdir -p ${deploy_path}/log
 fi
 
-set -x
-mkdir ${deploy_path}/log
 #Initialize some environment dependencies
 yum install -y libtiff
 
 # configs
-cd ${deploy_path}/oblogproxy
+cd ${deploy_path}
 if [[ ! -z ${sys_user} &&  ! -z ${sys_password} ]]; then
   sh run.sh config_sys ${sys_user} ${sys_password}
 fi
@@ -58,11 +58,25 @@ fi
 # supervisord && start
 yum install -y supervisor
 cp -rf env/supervisord.conf /etc/supervisord.conf
+if [ "${deploy_path}" != "/home/ds/oblogproxy" ]; then
+  echo "Use customize deploy_path: ${deploy_path} replace /etc/supervisord.conf"
+  sed -i "s|/home/ds|${deploy_path}|g" /etc/supervisord.conf
+fi
 
 if [ "$mode" == "oblogproxy" ]; then
   cp -rf env/supervisord.d/oblogproxy.ini /etc/supervisord.d/oblogproxy.ini
+  if [ "${deploy_path}" != "/home/ds/oblogproxy" ]; then
+    sed -i "s|/home/ds/oblogproxy|${deploy_path}|g" /etc/supervisord.d/oblogproxy.ini
+    sed -i "s|/home/ds/log|${deploy_path}/log|g" /etc/supervisord.d/oblogproxy.ini
+    echo "Use customize deploy_path : ${deploy_path} replace /etc/supervisord.d/oblogproxy.ini"
+  fi
 elif [ "$mode" == "binlog" ]; then
   cp -rf env/supervisord.d/binlog.ini /etc/supervisord.d/binlog.ini
+  if [ "${deploy_path}" != "/home/ds/oblogproxy" ]; then
+    sed -i "s|/home/ds/oblogproxy|${deploy_path}|g" /etc/supervisord.d/binlog.ini
+    sed -i "s|/home/ds/log|${deploy_path}/log|g" /etc/supervisord.d/binlog.ini
+    echo "Use customize deploy_path: ${deploy_path} replace /etc/supervisord.d/binlog.ini"
+  fi
 else
   echo "UnSupported mode: ${mode}"
   exit -1
