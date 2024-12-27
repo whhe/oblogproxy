@@ -64,6 +64,7 @@ void BinlogConverter::run()
     start_internal();
   } else {
     OMS_ERROR("Failed to init binlog converter.");
+    ::exit(-1);
   }
 }
 
@@ -86,13 +87,15 @@ void BinlogConverter::join_converter()
 void BinlogConverter::stop_converter()
 {
   if (is_run()) {
-    Thread::stop();
     _reader.stop();
     _convert.stop();
     _storage.stop();
     Counter::instance().stop();
+    Thread::stop();
   }
   OMS_ERROR("Binlog converter has been stopped.");
+  // The entire program needs to exit
+  ::exit(-1);
 }
 
 void BinlogConverter::cancel()

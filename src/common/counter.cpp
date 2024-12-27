@@ -49,8 +49,8 @@ void Counter::run()
     uint64_t rios = interval_s == 0 ? rio : (rio / interval_s);
     _write_iops = interval_s == 0 ? wio : (wio / interval_s);
     uint64_t xwios = interval_s == 0 ? xwio : (xwio / interval_s);
-    uint64_t delay = _count_timestamp_us - _timestamp_us;
-    uint64_t chk_delay = _count_timestamp_us - _checkpoint_us;
+    uint64_t delay = Timer::now() - _timestamp_us;
+    uint64_t chk_delay = Timer::now() - _checkpoint_us;
 
     // TODO... bytes rate
 
@@ -124,7 +124,7 @@ void Counter::mark_timestamp(uint64_t timestamp_us)
 
 uint64_t Counter::delay_us() const
 {
-  return _count_timestamp_us - _timestamp_us;
+  return Timer::now() - _timestamp_us;
 }
 
 void Counter::mark_checkpoint(uint64_t checkpoint_us)

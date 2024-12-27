@@ -16,6 +16,8 @@
 #include "trace_log.h"
 #include "binlog_converter.h"
 
+#include <env.h>
+
 namespace oceanbase::binlog {
 
 static Config& _s_config = Config::instance();
@@ -42,7 +44,9 @@ void ClogReaderRoutine::stop()
 {
   if (is_run()) {
     Thread::stop();
-    _obcdc->stop();
+    // obcdc stop interface will have various core problems. CDC classmates suggested that you directly use the process
+    // exit process to force termination.
+    //  _obcdc->stop();
     _queue.clear([this](ILogRecord* record) { _obcdc->release(record); });
   }
   OMS_INFO("Begin to stop clog reader routine thread...");
@@ -65,7 +69,7 @@ void ClogReaderRoutine::run()
     int64_t fetch_us = stage_tm.elapsed();
 
     if (ret == OB_TIMEOUT && record == nullptr) {
-      OMS_INFO("Fetch libobcdc timeout, nothing coming...");
+      OMS_DEBUG("Fetch libobcdc timeout, nothing coming...");
       continue;
     }
 
@@ -81,8 +85,8 @@ void ClogReaderRoutine::run()
     stage_tm.reset();
     counter.count_read_io(record->getRealSize());
     counter.count_read(1);
-    while (!_queue.offer(record, _s_config.read_timeout_us.val())) {
-      OMS_WARN("Reader transfer queue full({}), retry...", _queue.size(false));
+    while (!_queue.offer(record, s_meta.binlog_config()->read_timeout_us())) {
+      OMS_DEBUG("Reader transfer queue full({}), retry...", _queue.size(false));
     }
     int64_t offer_us = stage_tm.elapsed();
 

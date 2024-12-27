@@ -176,16 +176,16 @@ function verify_params() {
     exit -1
   fi
 
-  log_detail "METADB_INFO = host: ${host}, database: ${database}, port: ${port}, user: ${user}, password: ${password}, node_ip: ${node_ip}"
+  log_detail "METADB_INFO = host: ${host}, database: ${database}, port: ${port}, user: ${user}, node_ip: ${node_ip}"
   if [[ -z "${host}" || -z "${port}" || -z "${database}" || -z "${user}" || -z "${password}" || -z "${node_ip}" ]]; then
-    log_result "FAILED" "Unexpected metadb parameters, host: ${host}, port: ${port}, database: ${database}, user: ${user}, password: ${password}, node_ip: ${node_ip}"
+    log_result "FAILED" "Unexpected metadb parameters, host: ${host}, port: ${port}, database: ${database}, user: ${user}, node_ip: ${node_ip}"
     exit -1
   fi
 
   sys_user=$(jq -r ".sys_user" ${deploy_conf})
   sys_password=$(jq -r ".sys_password" ${deploy_conf})
   if [[ -z "${sys_user}"  || -z "${sys_password}" ]]; then
-    log_detail "!! Warning: Unexpected user parameters, sys user: ${sys_user}, sys password: ${sys_password}, may cause startup failed"
+    log_detail "!! Warning: Unexpected user parameters, sys user: ${sys_user}, may cause startup failed"
   fi
 
   supervise_start=$(jq -r ".supervise_start" ${deploy_conf})
@@ -282,7 +282,7 @@ function upgrade_schema() {
   diff -Z  ${schema_sql}  ${upgrade_path}/oblogproxy/conf/schema.sql >> ${log_file}
   mv ${schema_sql} "${deploy_path}/conf/schema.sql.bak.$(date '+%Y%m%d_%H%M%S')" && cp "${upgrade_path}/oblogproxy/conf/schema.sql" ${schema_sql}
 
-  log_detail "SCHEMA_SQL=${schema_sql}, CONF_FILE=${conf_file}, host: ${host}, port: ${port}, database: ${database}, user: ${user}, password: ${password}"
+  log_detail "SCHEMA_SQL=${schema_sql}, CONF_FILE=${conf_file}, host: ${host}, port: ${port}, database: ${database}, user: ${user}"
 
   mysql -h${host} -P${port} -u${user} -p${password} -D ${database} < ${schema_sql} >> ${log_file}
   if [[ $? -ne 0 ]]; then
@@ -359,7 +359,7 @@ function upgrade_binlog() {
   cd ${deploy_path}
   if [[ ! -z "${sys_user}" ]]; then
     if [[ ! -z "${sys_password}" ]]; then
-        log_detail "Update sys ${sys_user}, password: ${sys_password}"
+        log_detail "Update sys ${sys_user}"
         sh run.sh config_sys ${sys_user} ${sys_password} false >> ${log_file}
     fi
   fi

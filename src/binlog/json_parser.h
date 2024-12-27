@@ -533,14 +533,14 @@ public:
     return offset;
   }
 
-  static void parser(char* data, logproxy::MsgBuf& data_decode)
+  static void parser(const char* data, logproxy::MsgBuf& data_decode)
   {
     rapidjson::Document document;
     document.Parse(data);
     parse_nested_object(document, data_decode, 1, nullptr);
   }
 
-  static void parse_json_diff(char* data, logproxy::MsgBuf& data_decode)
+  static void parse_json_diff(const char* data, logproxy::MsgBuf& data_decode)
   {
     rapidjson::Document document;
     document.Parse(data);

@@ -27,7 +27,7 @@ TEST(MySQLConnection, connect)
   std::string user = "";
   std::string password = "";
   std::string database = "";
-  my_sql_connection.connect(ip, port, user, password, database);
+  my_sql_connection.init(ip, port, user, password, database);
   std::unique_ptr<sql::PreparedStatement> stmt(my_sql_connection.get_conn()->prepareStatement("show tables"));
   sql::ResultSet* res = stmt->executeQuery();
   defer(delete res);
@@ -73,9 +73,9 @@ TEST(ClusterDAO, uds)
   MySQLConnection connection;
   std::string _socket_path = "/data/huaqing/package/oms-logproxy/packenv/oblogproxy/run/binlogit/ob_mysql/"
                              "binlogit$ob_mysql$3/binlog_instance.socket";
-  connection.connect(_socket_path, "", "");
+  connection.init(_socket_path, "", "");
   try {
-    std::shared_ptr<sql::Connection> conn(connection.get_conn());
+    std::shared_ptr<sql::Connection> conn(connection.get_conn(false));
     if (conn == nullptr) {
       OMS_ERROR("Failed to initialize OBI :{} connection", _socket_path);
     }

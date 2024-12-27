@@ -16,7 +16,6 @@
 #include <map>
 #include <shared_mutex>
 #include <vector>
-#include "blocking_queue.hpp"
 #include "metric/sys_metric.h"
 #include "cluster/transport.h"
 #include "codec/message.h"
@@ -42,7 +41,17 @@ public:
 
   int node_report();
 
+  int query_nodes_by_state(vector<Node*>& nodes, set<State>& states);
+
+  int offline_node(Node& node);
+
   int node_probe();
+
+  int query_node(Node& node);
+
+  int register_node();
+
+  int node_report(Node node);
 
 private:
   void run() override;
@@ -58,14 +67,20 @@ public:
 
   void mark_instance_resource(const BinlogEntry* instance);
 
-  bool binlog_instances_exploration_task();
+  int binlog_instances_exploration_task();
 
   static void binlog_instance_exploration(ClusterConfig* cluster_config, const InstanceFailoverCb& instance_failover_cb,
       BinlogEntry instance, const Node& node);
 
+  int fetch_downtime_instances(string node_id, std::vector<BinlogEntry>& binlog_instances);
+
   void mark_binlog_instance_down(string node_id);
 
+  int query_surviving_instances(const std::string& node_id, vector<BinlogEntry*>& binlog_instances);
+
   int remote_non_live_node_instance_probe();
+
+  int query_nodes_by_state(vector<Node*>& nodes, set<State>& states);
 
 private:
   void run() override;
@@ -142,8 +157,7 @@ public:
 
   int update_instance(const BinlogEntry& instance) override;
 
-  void query_config_item_by_granularity(
-      ConfigTemplate& config, const std::unique_ptr<sql::Connection>& conn, const ConfigTemplate& condition);
+  void query_config_item_by_granularity(ConfigTemplate& config, sql::Connection* conn, const ConfigTemplate& condition);
 
   int query_init_instance_config(ConfigTemplate& config, const std::string& key_name, const std::string& group,
       const std::string& cluster, const std::string& tenant, const std::string& instance) override;
@@ -184,6 +198,10 @@ public:
 
   int query_sys_user(User& user) override;
 
+  /*!
+   * Connection pool for handling OBI related requests
+   * @return
+   */
   MySQLConnection& get_sql_connection();
 
 private:
@@ -202,7 +220,7 @@ public:
    * @param nodes
    * @return
    */
-  static int query_all_nodes(const std::unique_ptr<sql::Connection>& conn, std::vector<Node*>& nodes);
+  static int query_all_nodes(sql::Connection* conn, std::vector<Node*>& nodes);
 
   /*!
    * @brief Query nodes that meet the conditions based on the specified {node} condition
@@ -211,9 +229,9 @@ public:
    * @param node
    * @return
    */
-  static int query_nodes(const std::unique_ptr<sql::Connection>& conn, std::vector<Node*>& nodes, const Node& node);
+  static int query_nodes(sql::Connection* conn, std::vector<Node*>& nodes, const Node& node);
 
-  static int query_node(const std::unique_ptr<sql::Connection>& conn, Node& node);
+  static int query_node(sql::Connection* conn, Node& node);
 
   /*!
    * @brief Query nodes that meet the conditions based on the specified {node} condition
@@ -222,11 +240,9 @@ public:
    * @param state_conditions
    * @return
    */
-  static int query_nodes(
-      const std::unique_ptr<sql::Connection>& conn, std::vector<Node*>& nodes, const std::set<State>& state_conditions);
+  static int query_nodes(sql::Connection* conn, std::vector<Node*>& nodes, const std::set<State>& state_conditions);
 
-  static int query_nodes(
-      const std::unique_ptr<sql::Connection>& conn, set<std::string>& node_ids, map<std::string, Node>& nodes);
+  static int query_nodes(sql::Connection* conn, set<std::string>& node_ids, map<std::string, Node>& nodes);
 
   /*!
    * @brief Query the corresponding indicator information based on the specified {node}
@@ -235,7 +251,7 @@ public:
    * @param node
    * @return
    */
-  static int query_metric(const std::unique_ptr<sql::Connection>& conn, SysMetric& metric, const Node& node);
+  static int query_metric(sql::Connection* conn, SysMetric& metric, const Node& node);
 
   /*!
    * @brief Insert a {node} record
@@ -243,7 +259,7 @@ public:
    * @param node
    * @return
    */
-  static int insert(const std::unique_ptr<sql::Connection>& conn, const Node& node);
+  static int insert(sql::Connection* conn, const Node& node);
 
   /*!
    * @brief Update the specified {node} record
@@ -252,7 +268,7 @@ public:
    * @param condition
    * @return
    */
-  static int update_node(const std::unique_ptr<sql::Connection>& conn, const Node& node, const Node& condition);
+  static int update_node(sql::Connection* conn, const Node& node, const Node& condition);
 
   /*!
    * @brief Update the specified {node} record
@@ -260,7 +276,7 @@ public:
    * @param node
    * @return
    */
-  static int update_node(const std::unique_ptr<sql::Connection>& conn, const Node& node);
+  static int update_node(sql::Connection* conn, const Node& node);
 
   /*!
    * @brief delete all records satisfying node
@@ -268,7 +284,7 @@ public:
    * @param node
    * @return
    */
-  static int delete_nodes(const std::unique_ptr<sql::Connection>& conn, const Node& node);
+  static int delete_nodes(sql::Connection* conn, const Node& node);
 
   static void convert_to_node(const sql::ResultSet* res, Node& node);
 
@@ -286,11 +302,10 @@ class BinlogInstanceDAO {
   OMS_SINGLETON(BinlogInstanceDAO);
 
 public:
-  static int query_all_instances(
-      const std::unique_ptr<sql::Connection>& conn, std::vector<BinlogEntry*>& binlog_instances);
+  static int query_all_instances(sql::Connection* conn, std::vector<BinlogEntry*>& binlog_instances);
 
-  static int query_tenant_surviving_instances(const std::unique_ptr<sql::Connection>& conn, std::string& cluster,
-      std::string& tenant, std::vector<BinlogEntry>& instances);
+  static int query_tenant_surviving_instances(
+      sql::Connection* conn, std::string& cluster, std::string& tenant, std::vector<BinlogEntry>& instances);
 
   /*!
    * @brief Query binlog instances that meet the conditions based on the incoming {condition}
@@ -299,41 +314,37 @@ public:
    * @param condition
    * @return
    */
-  static int query_instance_by_entry(const std::unique_ptr<sql::Connection>& conn,
-      std::vector<BinlogEntry*>& binlog_instances, const BinlogEntry& condition);
+  static int query_instance_by_entry(
+      sql::Connection* conn, std::vector<BinlogEntry*>& binlog_instances, const BinlogEntry& condition);
 
   static int downtime_instance_query(
-      const std::unique_ptr<sql::Connection>& conn, std::vector<BinlogEntry>& binlog_instances, std::string node_id);
+      sql::Connection* conn, std::vector<BinlogEntry>& binlog_instances, std::string node_id);
 
-  static int query_instance_by_row_lock(const std::unique_ptr<sql::Connection>& conn,
-      std::vector<BinlogEntry*>& binlog_instances, const BinlogEntry& condition);
+  static int query_instance_by_row_lock(
+      sql::Connection* conn, std::vector<BinlogEntry*>& binlog_instances, const BinlogEntry& condition);
 
-  static int query_instances(const std::unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& instances,
-      const set<std::string>& instance_names);
+  static int query_instances(
+      sql::Connection* conn, vector<BinlogEntry*>& instances, const set<std::string>& instance_names);
 
-  static int query_instance(
-      const std::unique_ptr<sql::Connection>& conn, BinlogEntry& instance, const std::string& instance_name);
+  static int query_instance(sql::Connection* conn, BinlogEntry& instance, const std::string& instance_name);
 
-  static int query_instances(const std::unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& instances,
-      const set<InstanceState>& instance_states);
+  static int query_instances(
+      sql::Connection* conn, vector<BinlogEntry*>& instances, const set<InstanceState>& instance_states);
 
-  static int query_instances_by_node(
-      const std::unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& instances, const Node& node);
+  static int query_instances_by_node(sql::Connection* conn, vector<BinlogEntry*>& instances, const Node& node);
 
-  static int add_instances(const std::unique_ptr<sql::Connection>& conn, std::vector<BinlogEntry*>& binlog_instances);
+  static int add_instances(sql::Connection* conn, std::vector<BinlogEntry*>& binlog_instances);
 
-  static int add_instance(const std::unique_ptr<sql::Connection>& conn, const BinlogEntry& binlog_instance);
+  static int add_instance(sql::Connection* conn, const BinlogEntry& binlog_instance);
+
+  static int update_instance(sql::Connection* conn, const BinlogEntry& binlog_instance, const BinlogEntry& condition);
 
   static int update_instance(
-      const std::unique_ptr<sql::Connection>& conn, const BinlogEntry& binlog_instance, const BinlogEntry& condition);
+      sql::Connection* conn, const BinlogEntry& binlog_instance, const std::string& instance_name);
 
-  static int update_instance(const std::unique_ptr<sql::Connection>& conn, const BinlogEntry& binlog_instance,
-      const std::string& instance_name);
+  static int update_instance_state(sql::Connection* conn, const std::string&, InstanceState);
 
-  static int update_instance_state(const std::unique_ptr<sql::Connection>&, const std::string&, InstanceState);
-
-  static int delete_instances(
-      const std::unique_ptr<sql::Connection>& conn, std::vector<BinlogEntry*>& binlog_instances);
+  static int delete_instances(sql::Connection* conn, std::vector<BinlogEntry*>& binlog_instances);
 
   static void convert_to_instance(const sql::ResultSet* res, BinlogEntry& instance);
 
@@ -353,22 +364,21 @@ class TaskDAO {
   OMS_SINGLETON(TaskDAO);
 
 public:
-  static int query_all_tasks(const std::unique_ptr<sql::Connection>& conn, std::vector<Task*>& tasks);
+  static int query_all_tasks(sql::Connection* conn, std::vector<Task*>& tasks);
 
-  static int query_tasks_by_entry(
-      const std::unique_ptr<sql::Connection>& conn, std::vector<Task*>& tasks, const Task& condition);
+  static int query_tasks_by_entry(sql::Connection* conn, std::vector<Task*>& tasks, const Task& condition);
 
-  static int query_task_by_entry(const std::unique_ptr<sql::Connection>& conn, Task& task, const Task& condition);
+  static int query_task_by_entry(sql::Connection* conn, Task& task, const Task& condition);
 
-  static int add_tasks(const std::unique_ptr<sql::Connection>& conn, const std::vector<Task>& tasks);
+  static int add_tasks(sql::Connection* conn, const std::vector<Task>& tasks);
 
-  static int add_task(const std::unique_ptr<sql::Connection>& conn, Task& task);
+  static int add_task(sql::Connection* conn, Task& task);
 
-  static int update_task(const std::unique_ptr<sql::Connection>& conn, Task& task, const Task& condition);
+  static int update_task(sql::Connection* conn, Task& task, const Task& condition);
 
-  static int delete_task(const std::unique_ptr<sql::Connection>& conn, const Task& task);
+  static int delete_task(sql::Connection* conn, const Task& task);
 
-  static int delete_tasks(const std::unique_ptr<sql::Connection>& conn, std::vector<Task>& tasks);
+  static int delete_tasks(sql::Connection* conn, std::vector<Task>& tasks);
 
   static string add_task_sql(const Task& task);
 
@@ -386,20 +396,17 @@ class ConfigTemplateDAO {
   OMS_SINGLETON(ConfigTemplateDAO);
 
 public:
-  static int query_config_item(
-      const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config, const ConfigTemplate& condition);
+  static int query_config_item(sql::Connection* conn, ConfigTemplate& config, const ConfigTemplate& condition);
 
-  static int query_config_items(const std::unique_ptr<sql::Connection>& conn, std::vector<ConfigTemplate*>& configs,
-      const ConfigTemplate& condition);
+  static int query_config_items(
+      sql::Connection* conn, std::vector<ConfigTemplate*>& configs, const ConfigTemplate& condition);
 
-  static int query_config_items(const std::unique_ptr<sql::Connection>& conn,
-      std::map<std::string, std::string>& configs, const ConfigTemplate& condition);
+  static int query_config_items(
+      sql::Connection* conn, std::map<std::string, std::string>& configs, const ConfigTemplate& condition);
 
-  static int update_config_item(
-      const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config, const ConfigTemplate& condition);
+  static int update_config_item(sql::Connection* conn, ConfigTemplate& config, const ConfigTemplate& condition);
 
-  static int add_config_item(
-      const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config, const ConfigTemplate& condition);
+  static int add_config_item(sql::Connection* conn, ConfigTemplate& config, const ConfigTemplate& condition);
 
   static string add_config_item_sql(const ConfigTemplate& config);
 
@@ -414,24 +421,23 @@ public:
 
   static void convert_to_config_item(const sql::ResultSet* res, ConfigTemplate& config);
 
-  static int replace_into_config_item(const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config);
+  static int replace_into_config_item(sql::Connection* conn, ConfigTemplate& config);
 
   static string replace_into_config_item_sql(const ConfigTemplate& config);
 
-  static int delete_config_item(const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config);
+  static int delete_config_item(sql::Connection* conn, ConfigTemplate& config);
 };
 
 class PrimaryInstanceDAO {
   OMS_SINGLETON(PrimaryInstanceDAO);
 
 public:
-  static int query_primary_instance(
-      const std::unique_ptr<sql::Connection>& conn, PrimaryInstance& primary, const PrimaryInstance& condition);
+  static int query_primary_instance(sql::Connection* conn, PrimaryInstance& primary, const PrimaryInstance& condition);
 
-  static int add_primary_instance(const std::unique_ptr<sql::Connection>& conn, const PrimaryInstance& primary);
+  static int add_primary_instance(sql::Connection* conn, const PrimaryInstance& primary);
 
   static int update_primary_instance(
-      const std::unique_ptr<sql::Connection>& conn, const PrimaryInstance& primary, const PrimaryInstance& condition);
+      sql::Connection* conn, const PrimaryInstance& primary, const PrimaryInstance& condition);
 
   static string add_primary_instance_sql(const PrimaryInstance& primary);
 
@@ -451,17 +457,16 @@ class InstanceGtidSeqDAO {
   OMS_SINGLETON(InstanceGtidSeqDAO);
 
 public:
-  static int get_instance_boundary_gtid_seq(const std::unique_ptr<sql::Connection>& conn,
-      const std::string& instance_name, std::pair<InstanceGtidSeq, InstanceGtidSeq>& boundary_gtid_seq);
+  static int get_instance_boundary_gtid_seq(sql::Connection* conn, const std::string& instance_name,
+      std::pair<InstanceGtidSeq, InstanceGtidSeq>& boundary_gtid_seq);
 
-  static int add_gtid_seq_batch(
-      const std::unique_ptr<sql::Connection>& conn, const std::vector<InstanceGtidSeq>& gtid_seq_vec);
+  static int add_gtid_seq_batch(sql::Connection* conn, const std::vector<InstanceGtidSeq>& gtid_seq_vec);
 
   static int remove_instance_gtid_seq_before_gtid(
-      const std::unique_ptr<sql::Connection>& conn, const std::string& instance_name, uint64_t gtid);
+      sql::Connection* conn, const std::string& instance_name, uint64_t gtid);
 
   static int remove_instance_gtid_seq_before_checkpoint(
-      const std::unique_ptr<sql::Connection>& conn, const std::string& instance_name, uint64_t checkpoint);
+      sql::Connection* conn, const std::string& instance_name, uint64_t checkpoint);
 
   static void convert_to_instance_gtid_seq(const sql::ResultSet* res, InstanceGtidSeq& gtid_seq);
 };

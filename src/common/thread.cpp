@@ -70,6 +70,7 @@ void Thread::start()
       pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     }
     pthread_create(&_thd, &attr, _thd_rotine, this);
+    pthread_setname_np(_thd, _name.c_str());
     pthread_attr_destroy(&attr);
   } else {
     OMS_WARN("The current thread :{}({}) is already running", _name, _tid);

@@ -41,6 +41,11 @@ int writen(int fd, const void* buf, int size)
     if (EAGAIN != err && EINTR != err) {
       return OMS_FAILED;
     }
+    /*
+     * Currently there is a sending abnormality or network accumulation. need to wait for a while and try again.Prevent
+     * busy-wait context switching from occupying too many CPU resources
+     */
+    usleep(1000);
   }
   return OMS_OK;
 }

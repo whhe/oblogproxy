@@ -101,7 +101,7 @@ struct SetClause {
 
   void set_column(const std::string& col)
   {
-    this->column = static_cast<char*>(malloc(col.length() * sizeof(char)));
+    this->column = static_cast<char*>(malloc((col.length() + 1) * sizeof(char)));
     std::strcpy(this->column, col.c_str());
   }
 
@@ -109,7 +109,7 @@ struct SetClause {
   {
     std::string col_str = std::string(origin_column);
     transform(col_str.begin(), col_str.end(), col_str.begin(), ::tolower);
-    this->column = static_cast<char*>(malloc(col_str.length() * sizeof(char)));
+    this->column = static_cast<char*>(malloc((col_str.length() + 1) * sizeof(char)));
     std::strcpy(this->column, col_str.c_str());
     free(origin_column);
   }

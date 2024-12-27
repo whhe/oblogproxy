@@ -166,6 +166,16 @@ ObLogEvent::~ObLogEvent()
   delete (this->get_header());
 }
 
+bool ObLogEvent::is_filter() const
+{
+  return _filter;
+}
+
+void ObLogEvent::set_filter(bool filter)
+{
+  _filter = filter;
+}
+
 const std::string& ObLogEvent::get_ob_txn() const
 {
   return _ob_txn;
@@ -944,6 +954,16 @@ std::string QueryEvent::print_event_info()
   return info.str();
 }
 
+void QueryEvent::mark_ddl(bool is_ddl)
+{
+  _is_ddl = is_ddl;
+}
+
+bool QueryEvent::is_ddl() const
+{
+  return _is_ddl;
+}
+
 GtidMessage::GtidMessage(unsigned char* gtid_uuid, uint64_t gtid_txn_id_intervals)
     : _gtid_uuid(gtid_uuid), _gtid_txn_id_intervals(gtid_txn_id_intervals)
 {}
@@ -1022,7 +1042,6 @@ std::string GtidMessage::format_string()
       stream << ":" << i.first;
     }
   }
-  OMS_DEBUG("uuid string {}", stream.str());
   return stream.str();
 }
 
@@ -1168,6 +1187,8 @@ uint64_t GtidMessage::get_gtid_length()
   len += (_txn_range.size() * 16);
   return len;
 }
+
+XidEvent::~XidEvent() = default;
 
 size_t XidEvent::flush_to_buff(unsigned char* buff)
 {
@@ -1391,8 +1412,6 @@ size_t RowsEvent::flush_to_buff(unsigned char* buff)
   if (get_rows_event_type() != DELETE) {
     // column_after_bitmaps
     assert(this->get_columns_after_bitmaps() != nullptr);
-    //    OMS_STREAM_DEBUG << "row event type:" << get_rows_event_type() << " bytes:" << (this->get_width() + 7) / 8
-    //              << " even len :" << this->get_header()->get_event_length();
     memcpy(buff + pos, this->get_columns_after_bitmaps(), (this->get_width() + 7) / 8);
     pos += (this->get_width() + 7) / 8;
     auto after_row = this->get_after_row();
@@ -1470,8 +1489,7 @@ WriteRowsEvent::WriteRowsEvent(uint64_t table_id, uint16_t flags) : RowsEvent(ta
   this->set_rows_event_type(INSERT);
 }
 
-WriteRowsEvent::~WriteRowsEvent()
-{}
+WriteRowsEvent::~WriteRowsEvent() = default;
 
 void WriteRowsEvent::deserialize(unsigned char* buff)
 {
@@ -1578,7 +1596,6 @@ void UpdateRowsEvent::deserialize(unsigned char* buff)
 
   this->set_var_header_len(int2load(buff + pos));
   pos += 2;
-  OMS_DEBUG("table_id: {}, flags: {}", get_table_id(), get_var_header_len());
 
   this->set_width(get_lenenc_uint(buff, pos));
 
@@ -2334,6 +2351,13 @@ int seek_and_verify_complete_trx(const std::string& binlog_file, BinlogTrxOvervi
           binlog_trx.last_complete_trx_gtid = binlog_trx.trx_need_truncated_gtid;
           binlog_trx.trx_need_truncated_gtid = 0;
           binlog_trx.last_complete_trx_end_pos = header.get_next_position();
+          // The index file contains two mapping relationships, namely the mapping of the previous transaction and the
+          // mapping of the current transaction. If the binlog file corresponding to the current transaction is also
+          // complete, last_complete_trx_end_pos should be recorded as the end position of the current transaction,
+          // otherwise it should be recorded as the end position of the previous transaction.
+          if (binlog_trx.last_complete_trx_gtid == binlog_trx.trx_specify_truncated_gtid) {
+            binlog_trx.trx_specify_truncated_end_pos = binlog_trx.last_complete_trx_end_pos;
+          }
           last_event_start_pos_in_complete_trx = cur_pos;
         }
         break;

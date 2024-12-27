@@ -415,6 +415,29 @@ int64_t FsUtil::append_file(const std::string& file, MsgBuf& content)
   return ret;
 }
 
+int64_t FsUtil::append_file(const std::string& file, unsigned char* data, size_t size)
+{
+  if (file.empty()) {
+    OMS_STREAM_ERROR << "Failed to write file " << file;
+    return OMS_FAILED;
+  }
+  FILE* fp = FsUtil::fopen_binary(file);
+  if (fp == nullptr) {
+    OMS_STREAM_ERROR << "Failed to open file:" << file;
+    return OMS_FAILED;
+  }
+
+  size_t n = fwrite(data, sizeof(char), size, fp);
+  if (n != size) {
+    OMS_ERROR("Failed to write file, length error, written: {} expected: {}", n, size);
+    fclose(fp);
+    return OMS_FAILED;
+  }
+  int ret = fclose(fp);
+  OMS_DEBUG("Success to write file: {}, size: {} ret:{}", file, size, ret);
+  return ret;
+}
+
 uint64_t FsUtil::folder_size(const std::string& folder)
 {
   uintmax_t total_size = 0;

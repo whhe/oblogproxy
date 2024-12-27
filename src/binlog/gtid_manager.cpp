@@ -60,7 +60,6 @@ GtidManager::~GtidManager()
 
 int GtidManager::init()
 {
-  init_gtid_seq();
   if (OMS_OK != init_gtid_variables()) {
     OMS_ERROR("Failed to init gtid variables.");
     return OMS_FAILED;

@@ -31,7 +31,7 @@ public:
   explicit LogStream(int level, const std::string& file, const int line, std::ostream* os = &std::cout)
       : _level(level), _file(file), _line(line), _os(os)
   {
-    char tmbuf[2 + 2 + 1 + 2 + 1 + 2 + 1 + 2 + 1 + 6 + 1 + 1 + 5 + 1 + 1];
+    char tmbuf[98];
 
     if (_level == 0) {
 #ifndef NDEBUG

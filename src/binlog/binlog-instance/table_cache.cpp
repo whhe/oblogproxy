@@ -23,15 +23,15 @@ uint64_t TableCache::assign_new_table_id()
 
 uint64_t TableCache::get_table_id(const std::string& db_name, const std::string& tb_name)
 {
+  std::unique_lock<std::mutex> lock(_mutex);
   TableName table_name = TableName{db_name, tb_name};
   auto it = _cache.find(table_name);
   if (it != _cache.end()) {
     return it->second;
-  } else {
-    auto table_id = assign_new_table_id();
-    _cache.insert({{db_name, tb_name}, table_id});
-    return table_id;
   }
+  auto table_id = assign_new_table_id();
+  _cache.insert({{db_name, tb_name}, table_id});
+  return table_id;
 }
 
 void TableCache::refresh_table_id(const std::string& db_name, const std::string& tb_name)
@@ -39,6 +39,7 @@ void TableCache::refresh_table_id(const std::string& db_name, const std::string&
   if (db_name.empty() || tb_name.empty()) {
     return;
   }
+  std::unique_lock<std::mutex> lock(_mutex);
   auto table_id = assign_new_table_id();
   _cache.insert_or_assign({db_name, tb_name}, table_id);
 }

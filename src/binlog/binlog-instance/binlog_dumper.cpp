@@ -400,7 +400,8 @@ int BinlogDumper::seek_event(FILE* stream, MsgBuf& msg_buf, bool& skip_record)
   uint32_t event_len = header.get_event_length();
 
   auto* event_buf = static_cast<unsigned char*>(malloc(header.get_event_length() + 1));
-  FreeGuard<unsigned char*> free_guard(event_buf);
+  bool release = true;
+  defer(if (release) free(event_buf));
   int1store(event_buf, 0);
   ret = FsUtil::read_file(stream, event_buf + 1, _checkpoint.second, event_len);
   if (ret != OMS_OK) {
@@ -421,7 +422,8 @@ int BinlogDumper::seek_event(FILE* stream, MsgBuf& msg_buf, bool& skip_record)
   if (skip_record) {
     return UNKNOWN_EVENT;
   }
-  msg_buf.push_back_copy(reinterpret_cast<char*>(event_buf), event_len + 1);
+  msg_buf.push_back(reinterpret_cast<char*>(event_buf), event_len + 1);
+  release = false;
   _rate_limiter.in_event_with_alarm(event_len);
 
   // mark the latest checkpoint where the event is sent currently
@@ -1012,7 +1014,9 @@ void DumperMetric::mark_checkpoint_ts(int64_t ts)
 
 void DumperMetric::mark_send_position(std::pair<std::string, uint64_t> position)
 {
-  this->_send_position = position;
+  std::unique_lock<std::shared_mutex> exclusive_lock{_shared_mutex};
+  this->_send_position.first = position.first;
+  this->_send_position.second = position.second;
 }
 
 void DumperMetric::count_send(uint64_t count)
@@ -1065,11 +1069,13 @@ std::uint64_t DumperMetric::checkpoint() const
 
 std::pair<std::string, uint64_t> DumperMetric::send_position()
 {
+  std::unique_lock<std::shared_mutex> exclusive_lock{_shared_mutex};
   return _send_position;
 }
 
-std::string DumperMetric::send_position_str() const
+std::string DumperMetric::send_position_str()
 {
+  std::unique_lock<std::shared_mutex> exclusive_lock{_shared_mutex};
   return _send_position.first + ":" + std::to_string(_send_position.second);
 }
 

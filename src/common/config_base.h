@@ -60,6 +60,8 @@ public:
 
   virtual std::string to_string(bool formatted) const;
 
+  virtual std::string to_string(bool formatted, bool desensitized) const;
+
 protected:
   std::string _name;
   std::map<std::string, ConfigItemBase*> _configs;

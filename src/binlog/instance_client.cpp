@@ -66,7 +66,7 @@ int InstanceClient::connect()
     return OMS_FAILED;
   }
 
-  OMS_INFO("Successfully login binlog instance, is_local: {}, addr: {}", _is_local, server_addr);
+  OMS_DEBUG("Successfully login binlog instance, is_local: {}, addr: {}", _is_local, server_addr);
   return OMS_OK;
 }
 
@@ -92,36 +92,6 @@ int InstanceClient::route_query(PacketBuf& payload, MsgBuf& resp_buf)
   return _instance.route_query(request_buf, resp_buf);
 }
 
-int InstanceClient::report(sql::ResultSet*& rs)
-{
-  MySQLConnection connection;
-  int ret =
-      _is_local ? connection.connect(_socket_path, _username, "") : connection.connect(_host, _port, _username, "", "");
-  std::string server_addr = _is_local ? _socket_path : std::string(_host) + std::string(":") + std::to_string(_port);
-  if (OMS_OK != ret) {
-    OMS_ERROR("Failed to login binlog instance, is_local: {}, addr: {}", _is_local, server_addr);
-    return OMS_FAILED;
-  }
-  try {
-    std::shared_ptr<sql::Connection> conn(connection.get_conn());
-    if (conn == nullptr) {
-      OMS_ERROR("Failed to initialize OBI :{} connection", _socket_path);
-      return OMS_FAILED;
-    }
-    std::shared_ptr<sql::PreparedStatement> statement(conn->prepareStatement("report"));
-    if (statement != nullptr) {
-      rs = statement->executeQuery();
-    } else {
-      OMS_ERROR("Failed to initialize OBI :{} connection", _socket_path);
-      return OMS_FAILED;
-    }
-  } catch (sql::SQLException& e) {
-    OMS_ERROR("Error selecting tasks: {}", e.what());
-    return OMS_FAILED;
-  }
-  return OMS_OK;
-}
-
 std::string InstanceClient::get_server_addr()
 {
   return _instance.get_server_addr();
@@ -130,17 +100,13 @@ std::string InstanceClient::get_server_addr()
 int InstanceClient::query(const string& query_sql, sql::ResultSet*& rs)
 {
   MySQLConnection connection;
-  int ret = connection.connect(_host, _port, _username, "", "");
-  if (OMS_OK != ret) {
-    OMS_ERROR("Failed to login binlog instance, addr: [{}:{}]", _host, _port);
-    return OMS_FAILED;
-  }
   try {
-    std::unique_ptr<sql::Connection> conn = connection.get_conn();
+    auto conn = connection.get_conn(_host, _port, _username, "", "");
     if (conn == nullptr) {
       OMS_ERROR("Failed to initialize OBI :{} connection", _socket_path);
       return OMS_FAILED;
     }
+    defer(conn->close());
     std::shared_ptr<sql::PreparedStatement> statement(conn->prepareStatement(query_sql));
     if (statement != nullptr) {
       rs = statement->executeQuery();

@@ -21,11 +21,14 @@ struct ClusterConfig : public Object {
    * @brief database ip
    */
   MODEL_DEF_STR(database_ip, "");
-  MODEL_DEF_INT16(database_port, -1);
+  MODEL_DEF_UINT16(database_port, 0);
   /*!
    * @brief The database name corresponding to the meta database
    */
   MODEL_DEF_STR(database_name, "");
+  // k1=v1 k2=v2
+  MODEL_DEF_STR(database_properties, "");
+  MODEL_DEF_INT(min_pool_size, 30);
   MODEL_DEF_STR(user, "");
   MODEL_DEF_STR(password, "");
   MODEL_DEF_UINT64(push_pull_interval_us, 1000000);

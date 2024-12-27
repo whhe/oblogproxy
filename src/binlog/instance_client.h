@@ -38,8 +38,6 @@ public:
 
   int report(MySQLResultSet& rs, uint64_t gtid);
 
-  int report(sql::ResultSet*& rs);
-
   int query(const std::string& query_sql, sql::ResultSet*& rs);
 
   int query(const std::string& query_sql, MySQLResultSet& rs);

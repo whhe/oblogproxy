@@ -148,16 +148,13 @@ int ObAccess::init(const ObcdcConfig& hs_config, const std::string& password_sha
   }
 
   if (_user_to_conn.empty() || _password_sha1.empty()) {
-    OMS_ERROR(
-        "Failed to init ObAccess caused by empty user or password, user:{}, pwd:{}", _user_to_conn, _password_sha1);
+    OMS_ERROR("Failed to init ObAccess caused by empty user or password, user:{}", _user_to_conn);
     return OMS_FAILED;
   }
 
   _sys_user = !hs_config.sys_user.empty() ? hs_config.sys_user.val() : Config::instance().ob_sys_username.val();
   if (_sys_user.empty() || _sys_password_sha1.empty()) {
-    OMS_ERROR("Failed to init ObAccess caused by empty sys_user or sys_password,sys_usr:{},sys_password:{}",
-        _sys_user,
-        _sys_password_sha1);
+    OMS_ERROR("Failed to init ObAccess caused by empty sys_user or sys_password,sys_usr:{}", _sys_user);
     return OMS_FAILED;
   }
 

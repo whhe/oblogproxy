@@ -675,7 +675,7 @@ IoResult BaseCreateProcessor::process(Connection* conn, const hsql::SQLStatement
       replicate_num,
       options_str);
 
-  if (cluster.empty() || cluster.empty()) {
+  if (cluster.empty() || tenant.empty()) {
     return conn->send_err_packet(BINLOG_FATAL_ERROR, "Cluster or tenant cannot be empty", "HY000");
   }
   if (replicate_num > s_config.max_instance_replicate_num.val()) {
@@ -1332,6 +1332,7 @@ bool DropBinlogInstanceProcessor::obtain_instances(const hsql::SQLStatement* sta
 
 IoResult ShowBinlogInstanceProcessor::process(Connection* conn, const hsql::SQLStatement* statement)
 {
+  Timer timer;
   ColumnPacket name_column_packet{
       "name", "", UTF8_CS, 128, ColumnType::ct_var_string, ColumnDefinitionFlags::pri_key_flag, 31};
   ColumnPacket ob_cluster_column_packet{
@@ -1433,11 +1434,15 @@ IoResult ShowBinlogInstanceProcessor::process(Connection* conn, const hsql::SQLS
           instance_names_str.append(instance_name).append(",");
         }
         OMS_INFO("{}: [show binlog instance] show instances for instances: {}", conn->trace_id(), instance_names_str);
-
+        timer.reset();
         if (OMS_OK != g_cluster->query_instances(instance_entries, instance_names)) {
           OMS_ERROR(
               "{}: [show binlog instance] Failed to fetch binlog instances: {}", conn->trace_id(), instance_names_str);
         }
+        OMS_INFO("{}: [show binlog instance] fetch {} instances,time consuming {}",
+            conn->trace_id(),
+            instance_entries.size(),
+            timer.elapsed());
       }
       break;
     }
@@ -1449,12 +1454,17 @@ IoResult ShowBinlogInstanceProcessor::process(Connection* conn, const hsql::SQLS
       BinlogEntry condition;
       condition.set_cluster(cluster);
       condition.set_tenant(tenant);
+      timer.reset();
       if (OMS_OK != g_cluster->query_instances(instance_entries, condition)) {
         OMS_ERROR("{}: [show binlog instance] Failed to fetch binlog instances for tenant: [{}.{}]",
             conn->trace_id(),
             cluster,
             tenant);
       }
+      OMS_INFO("{}: [show binlog instance] fetch {} instances,time consuming {}",
+          conn->trace_id(),
+          instance_entries.size(),
+          timer.elapsed());
       break;
     }
     case hsql::ShowInstanceMode::IP: {
@@ -1513,6 +1523,7 @@ IoResult ShowBinlogInstanceProcessor::process(Connection* conn, const hsql::SQLS
   std::set<std::string> node_ids;
   std::vector<ResultSet*> result_vec;
   defer(release_vector(result_vec));
+  timer.reset();
   for (BinlogEntry* instance : instance_entries) {
     if (!history && instance->is_dropped()) {
       continue;
@@ -1531,6 +1542,10 @@ IoResult ShowBinlogInstanceProcessor::process(Connection* conn, const hsql::SQLS
     result_vec.emplace_back(result);
     count += 1;
   }
+  OMS_INFO("{}: [show binlog instance] report_asyn {} instances,time consuming {}",
+      conn->trace_id(),
+      count,
+      timer.elapsed());
   g_cluster->query_nodes(node_ids, nodes);
   if (nodes.empty()) {
     OMS_ERROR("{}: [show binlog instances] Failed to obtain [{}] nodes related to instances",
@@ -1542,8 +1557,8 @@ IoResult ShowBinlogInstanceProcessor::process(Connection* conn, const hsql::SQLS
     bool waiting = true;
     while (waiting) {
       if (entry.second->state == ResultSetState::WAITING) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        OMS_INFO("{}: [show binlog instances] sleep 0.2s waiting for report instance {}",
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        OMS_DEBUG("{}: [show binlog instances] sleep 0.2s waiting for report instance {}",
             conn->trace_id(),
             entry.first->instance_name());
         continue;

@@ -19,11 +19,168 @@
 #include "env.h"
 #include "binlog_converter.h"
 
+#include <ThreadPerTaskScheduler.h>
+
 using namespace oceanbase::logproxy;
 namespace oceanbase::binlog {
+void SerializeEvent::reset()
+{
+  buffer.reset_offset();
+}
+
+void SerializeHandler::onEvent(SerializeEvent& data, std::int64_t sequence)
+{
+  data.reset();
+  // If this batch contains rotate event, it needs to be serialized to the specified data location.
+  for (const auto rotate_event : data.rotate_events) {
+    data.rotate_offsets.push_back(
+        rotate_event->get_header()->get_next_position() - rotate_event->get_header()->get_event_length());
+  }
+
+  int index = 0;
+  for (const auto event : data.events) {
+    if (event->is_filter()) {
+      continue;
+    }
+    Counter::instance().count_write(1);
+    if (data.is_rotation && data.rotate_events.size() > index &&
+        event->get_header()->get_next_position() == data.rotate_offsets[index]) {
+      const auto len =
+          event->get_header()->get_event_length() + data.rotate_events[index]->get_header()->get_event_length();
+      data.buffer.ensure_capacity(len);
+      event->flush_to_buff(data.buffer.data_cur());
+      data.buffer.publish(event->get_header()->get_event_length());
+      data.rotate_events[index]->flush_to_buff(data.buffer.data_cur());
+      data.buffer.publish(data.rotate_events[index]->get_header()->get_event_length());
+      data.rotate_offsets[index] = data.buffer.offset();
+      index++;
+      continue;
+    }
+    const auto len = event->get_header()->get_event_length();
+    data.buffer.ensure_capacity(len);
+    event->flush_to_buff(data.buffer.data_cur());
+    data.buffer.publish(len);
+  }
+
+  auto seq = g_disruptor->ringBuffer()->next();
+  auto ringBuffer = g_disruptor->ringBuffer();
+  (*ringBuffer)[seq].events.swap(data.events);
+  ringBuffer->publish(seq);
+}
+
+void AllocateHandler::onEvent(SerializeEvent& data, std::int64_t sequence, bool endOfBatch)
+{
+  _binlog_storage->global_allocation_of_backfill_events(data);
+}
+
+void StorageHandler::onEvent(SerializeEvent& data, std::int64_t sequence, bool endOfBatch)
+{
+  if (data.is_rotation) {
+    uint64_t cur_offset = 0;
+    uint64_t index = 0;
+    for (const auto rotate_index : data.rotate_offsets) {
+      assert(rotate_index > cur_offset);
+      if (_binlog_storage->persistent_binlog(
+              data.buffer.data() + cur_offset, rotate_index - cur_offset, data.index_record) != OMS_OK) {
+        OMS_FATAL("placement failed !!!");
+        throw std::runtime_error("placement failed !!!");
+      }
+      cur_offset = rotate_index;
+      if (_binlog_storage->init_next_binlog_file(dynamic_cast<RotateEvent*>(data.rotate_events[index])) != OMS_OK) {
+        OMS_ERROR("Failed to initialize next binlog file");
+        throw std::runtime_error("Failed to initialize next binlog file");
+      }
+      g_purge_binlog_executor->submit(purge_expired_binlog);
+      index++;
+    }
+
+    /*
+     * The remaining data after this batch rotation is written
+     */
+    if (cur_offset < data.buffer.offset()) {
+      if (_binlog_storage->persistent_binlog(
+              data.buffer.data() + cur_offset, data.buffer.offset() - cur_offset, data.index_record) != OMS_OK) {
+        throw std::runtime_error("placement failed !!!");
+      }
+    }
+
+  } else {
+    if (_binlog_storage->persistent_binlog(data.buffer.data(), data.buffer.offset(), data.index_record) != OMS_OK) {
+      OMS_FATAL("placement failed !!!");
+      throw std::runtime_error("placement failed !!!");
+    }
+  }
+
+  release_vector(data.rotate_events);
+  data.rotate_offsets.clear();
+  Counter::instance().count_write_io(data.buffer.offset());
+  data.is_rotation = false;
+}
+
+void SerializeExceptionHandler::handleEventException(
+    const std::exception& ex, std::int64_t sequence, SerializeEvent& evt)
+{
+  OMS_ERROR("Handle event exception: {},sequence :{}", ex.what(), sequence);
+  _binlog_storage->stop();
+}
+
+void SerializeExceptionHandler::handleOnStartException(const std::exception& ex)
+{
+  OMS_ERROR("Serialize handle startup failed : {}", ex.what());
+  _binlog_storage->stop();
+}
+
+void SerializeExceptionHandler::handleOnShutdownException(const std::exception& ex)
+{
+  OMS_ERROR("Serialize handle shutdown failed: {}", ex.what());
+  _binlog_storage->stop();
+}
+
+void SerializeExceptionHandler::handleOnTimeoutException(const std::exception& ex, std::int64_t sequence)
+{
+  OMS_ERROR("Serialize handle timeout exception: {}, sequence: {}", ex.what(), sequence);
+  _binlog_storage->stop();
+}
 
 int BinlogStorage::init()
 {
+  _serialize_task_scheduler = std::make_shared<Disruptor::RoundRobinThreadAffinedTaskScheduler>();
+
+  if (s_meta.binlog_config()->binlog_serialize_ring_buffer_size() < 1) {
+    OMS_ERROR("binlog_serialize_ring_buffer_size must not be less than 1");
+    return OMS_FAILED;
+  }
+
+  if (!Disruptor::Util::isPowerOf2(s_meta.binlog_config()->binlog_serialize_ring_buffer_size())) {
+    OMS_ERROR("binlog_serialize_ring_buffer_size must be a power of 2");
+    return OMS_FAILED;
+  }
+
+  _serialize_disruptor = std::make_shared<Disruptor::disruptor<SerializeEvent>>(
+      create_serialize_event, s_meta.binlog_config()->binlog_serialize_ring_buffer_size(), _serialize_task_scheduler);
+  _allocate_handler = std::make_shared<AllocateHandler>(this);
+  _storage_handler = std::make_shared<StorageHandler>(this);
+  for (int i = 0; i < s_meta.binlog_config()->binlog_serialize_parallel_size(); ++i) {
+    _serialize_handlers.emplace_back(std::make_shared<SerializeHandler>());
+  }
+  auto exception_handle = std::make_shared<SerializeExceptionHandler>(this);
+  _serialize_disruptor->handleExceptionsWith(exception_handle);
+  _serialize_disruptor->handleEventsWith(_allocate_handler)
+      ->thenHandleEventsWithWorkerPool(_serialize_handlers)
+      ->then(_storage_handler);
+
+  auto number_of_threads = std::max(s_meta.binlog_config()->binlog_serialize_thread_size(),
+      s_meta.binlog_config()->binlog_serialize_parallel_size() + 2);
+  _serialize_task_scheduler->start(number_of_threads);
+  _serialize_disruptor->start();
+
+  Counter::instance().register_gauge("SerializeRingBufferQ", [this]() {
+    return _serialize_disruptor->bufferSize() - _serialize_disruptor->ringBuffer()->getRemainingCapacity();
+  });
+
+  Counter::instance().register_gauge("ReleaseRingBufferQ",
+      [this]() { return g_disruptor->bufferSize() - g_disruptor->ringBuffer()->getRemainingCapacity(); });
+
   int file_index = 0;
   string binlog_dir = string(".") + BINLOG_DATA_DIR;
 
@@ -56,125 +213,50 @@ int BinlogStorage::init()
   }
   this->_file_name = bin_path;
   OMS_INFO("[storage] Successfully init the current binlog file: {}", _file_name);
+
+  if (recover_safely() != OMS_OK) {
+    OMS_ERROR("Failed to recover binlog storage");
+    return OMS_FAILED;
+  }
+  OMS_INFO("Successfully recover binlog storage");
   return OMS_OK;
 }
 
 void BinlogStorage::run()
 {
   std::vector<ObLogEvent*> events;
-  events.reserve(s_config.read_wait_num.val());
-  MsgBuf buffer;
-  size_t buffer_pos = 0;
-  BinlogIndexRecord index_record;
-  g_index_manager->get_latest_index(index_record);
-  if (index_record.get_file_name().empty()) {
+  g_index_manager->get_latest_index(_index_record);
+  if (_index_record.get_file_name().empty()) {
     OMS_ERROR("Failed to get latest index record.");
     stop();
   }
 
   while (is_run()) {
+    // _stage_timer.reset();
+    events.reserve(s_meta.binlog_config()->storage_wait_num());
     _stage_timer.reset();
-    while (!_event_queue.poll(events, s_config.read_timeout_us.val()) || events.empty()) {
+    while (!_event_queue.poll(events, s_meta.binlog_config()->storage_timeout_us()) || events.empty()) {
       if (!is_run()) {
-        OMS_INFO("Binlog storage thread has been stopped.");
+        OMS_ERROR("Binlog storage thread has been stopped.");
         break;
       }
-
-      OMS_INFO("Empty log event queue put by convert thread, retry...");
+      OMS_DEBUG("Empty log event queue put by convert thread, retry...");
     }
-
-    if (storage_binlog_event(events, buffer, buffer_pos, index_record) != OMS_OK) {
-      break;
-    }
-
-    finishing_touches(buffer, buffer_pos);
+    auto seq = _serialize_disruptor->ringBuffer()->next();
+    auto ringBuffer = _serialize_disruptor->ringBuffer();
+    (*ringBuffer)[seq].events.swap(events);
+    ringBuffer->publish(seq);
   }
+  OMS_ERROR("Storage thread exits");
   _converter.stop_converter();
 }
 
-int BinlogStorage::finishing_touches(MsgBuf& buffer, size_t& buffer_pos)
+int BinlogStorage::finishing_touches(MsgBuf& buffer, size_t& buffer_pos) const
 {
   buffer.reset();
   buffer_pos = 0;
   int64_t poll_us = _stage_timer.elapsed();
   Counter::instance().count_key(Counter::SENDER_SEND_US, poll_us);
-  return OMS_OK;
-}
-
-int BinlogStorage::storage_binlog_event(
-    vector<ObLogEvent*>& events, MsgBuf& buffer, size_t& buffer_pos, BinlogIndexRecord& index_record)
-{
-  Timer cache_time;
-  cache_time.reset();
-  for (auto event : events) {
-    if (event == nullptr) {
-      OMS_ERROR("event is an unexpected NULL value");
-      continue;
-    }
-    OMS_DEBUG(event->str_format());
-
-    if (event->get_header()->get_type_code() == HEARTBEAT_LOG_EVENT) {
-      g_gtid_manager->mark_event(true, event->get_checkpoint(), index_record.get_current_mapping());
-      g_gtid_manager->compress_and_save_gtid_seq(index_record.get_current_mapping());
-      continue;
-    }
-    Counter::instance().count_write(1);
-    _rate_limiter.in_event_with_alarm(event->get_header()->get_event_length());
-
-    if (event->get_header()->get_type_code() == ROTATE_EVENT) {
-      buffer_pos = rotate(event, buffer, buffer_pos, index_record);
-      if (buffer_pos < 0) {
-        OMS_ERROR("Failed to rotate, index record: {}", index_record.to_string());
-        return OMS_FAILED;
-      }
-      continue;
-    }
-
-    if (event->get_header()->get_type_code() == GTID_LOG_EVENT) {
-      _valid_events_coming = true;
-      index_record.set_before_mapping(index_record.get_current_mapping());
-      std::pair<std::string, int64_t> current_mapping(event->get_ob_txn(), ((GtidLogEvent*)event)->get_gtid_txn_id());
-      index_record.set_current_mapping(current_mapping);
-      g_gtid_manager->mark_event(false, event->get_checkpoint(), index_record.get_current_mapping());
-
-      index_record.set_checkpoint(event->get_checkpoint() / 1000000);
-      Counter::instance().mark_checkpoint(event->get_checkpoint());
-      Counter::instance().mark_timestamp(
-          ((GtidLogEvent*)event)->get_last_committed() * 1000000 + ((GtidLogEvent*)event)->get_sequence_number());
-      OMS_DEBUG("current ob txn: {}, gtid txn id: {}, checkpoint: {}",
-          event->get_ob_txn(),
-          index_record.get_current_mapping().second,
-          index_record.get_checkpoint());
-    }
-
-    auto* data = static_cast<unsigned char*>(malloc(event->get_header()->get_event_length()));
-    size_t ret = event->flush_to_buff(data);
-
-    if ((buffer_pos + event->get_header()->get_event_length()) >= s_config.binlog_max_event_buffer_bytes.val() ||
-        (cache_time.elapsed() > s_config.binlog_convert_timeout_us.val() && buffer_pos != 0)) {
-      if (FsUtil::append_file(_file_name, buffer) != OMS_OK) {
-        return OMS_FAILED;
-      }
-
-      update_index_record(index_record);
-      buffer.reset();
-      Counter::instance().count_write_io(buffer_pos);
-      buffer_pos = 0;
-      cache_time.reset();
-    }
-    buffer.push_back(reinterpret_cast<char*>(data), ret);
-    buffer_pos += ret;
-  }
-
-  release_vector(events);
-  if (buffer_pos > 0) {
-    if (FsUtil::append_file(_file_name, buffer) != OMS_OK) {
-      return OMS_FAILED;
-    }
-    // update offset
-    update_index_record(index_record);
-    Counter::instance().count_write_io(buffer_pos);
-  }
   return OMS_OK;
 }
 
@@ -193,10 +275,11 @@ BinlogStorage::BinlogStorage(BinlogConverter& reader, BlockingQueue<ObLogEvent*>
   _rate_limiter.update_throttle_iops(s_meta.binlog_config()->throttle_convert_iops());
 }
 
-size_t init_binlog_file(MsgBuf& content, RotateEvent* rotate_event)
+int64_t BinlogStorage::init_binlog_file(RotateEvent* rotate_event)
 {
+  MsgBuf content;
   auto* event_data = static_cast<unsigned char*>(malloc(1024));
-  size_t buff_pos = 0;
+  int64_t buff_pos = 0;
   // add magic
   for (int i = 0; i < BINLOG_MAGIC_SIZE; ++i) {
     int1store(event_data + i, binlog_magic[i]);
@@ -221,25 +304,224 @@ size_t init_binlog_file(MsgBuf& content, RotateEvent* rotate_event)
   OMS_INFO(
       "Successfully init binlog file(add FormatDescriptionEvent + PreviousGtidsLogEvent), current pos: {}", buff_pos);
   free(event_data);
-  return buff_pos;
+  _file_name = string(".") + BINLOG_DATA_DIR + rotate_event->get_next_binlog_file_name();
+  if (FsUtil::append_file(_file_name, content) != OMS_OK) {
+    return OMS_FAILED;
+  }
+  return OMS_OK;
 }
 
-size_t BinlogStorage::rotate(ObLogEvent* event, MsgBuf& buffer, std::size_t size, BinlogIndexRecord& index_record)
+int64_t BinlogStorage::init_next_binlog_file(RotateEvent* rotate_event)
+{
+  auto* flags = static_cast<unsigned char*>(malloc(FLAGS_LEN));
+  int2store(flags, 0);
+  FILE* fp = FsUtil::fopen_binary(
+      string(".") + BINLOG_DATA_DIR + CommonUtils::fill_binlog_file_name(rotate_event->get_index() - 1), "rb+");
+  FsUtil::rewrite(fp, flags, BINLOG_MAGIC_SIZE + FLAGS_OFFSET, FLAGS_LEN);
+  free(flags);
+  FsUtil::fclose_binary(fp);
+
+  auto* event_data = static_cast<unsigned char*>(malloc(1024));
+  defer(free(event_data););
+  int64_t buff_pos = 0;
+  // add magic
+  for (int i = 0; i < BINLOG_MAGIC_SIZE; ++i) {
+    int1store(event_data + i, binlog_magic[i]);
+  }
+  buff_pos += BINLOG_MAGIC_SIZE;
+
+  // add FormatDescriptionEvent
+  FormatDescriptionEvent format_description_event = FormatDescriptionEvent(rotate_event->get_header()->get_timestamp());
+  buff_pos += format_description_event.flush_to_buff(event_data + buff_pos);
+  // add PreviousGtidsLogEvent
+  std::vector<GtidMessage*> gtid_messages;
+  rotate_event->get_next_previous_gtids(gtid_messages);
+  PreviousGtidsLogEvent previous_gtids_log_event =
+      PreviousGtidsLogEvent(gtid_messages.size(), gtid_messages, rotate_event->get_header()->get_timestamp());
+
+  uint32_t next_pos = format_description_event.get_header()->get_next_position() +
+                      previous_gtids_log_event.get_header()->get_event_length();
+
+  previous_gtids_log_event.get_header()->set_next_position(next_pos);
+  buff_pos += previous_gtids_log_event.flush_to_buff(event_data + buff_pos);
+  if (FsUtil::append_file(
+          string(".") + BINLOG_DATA_DIR + rotate_event->get_next_binlog_file_name(), event_data, buff_pos) != OMS_OK) {
+    OMS_ERROR("Write next binlog file failed: {}", rotate_event->get_next_binlog_file_name());
+    return OMS_FAILED;
+  }
+  OMS_INFO(
+      "Successfully init binlog file(add FormatDescriptionEvent + PreviousGtidsLogEvent), current pos: {}", buff_pos);
+  return add_next_binlog_index(_index_record, rotate_event);
+}
+
+int BinlogStorage::global_allocation_of_backfill_events(SerializeEvent& event_batch)
+{
+  for (auto event : event_batch.events) {
+    if (event == nullptr) {
+      OMS_ERROR("event is an unexpected NULL value");
+      continue;
+    }
+    bool is_rotate = false;
+    Counter::instance().count_write(1);
+    _rate_limiter.in_event_with_alarm(event->get_header()->get_event_length());
+    switch (event->get_header()->get_type_code()) {
+      case HEARTBEAT_LOG_EVENT: {
+        if (!_filter_util_checkpoint_trx) {
+          g_gtid_manager->mark_event(true, event->get_checkpoint(), _index_record.get_current_mapping());
+          g_gtid_manager->compress_and_save_gtid_seq(_index_record.get_current_mapping());
+        }
+        continue;
+      }
+      case GTID_LOG_EVENT: {
+        auto gtid_log_event = (GtidLogEvent*)event;
+        gtid_log_event->set_gtid_txn_id(_txn_gtid_seq);
+        if (_filter_util_checkpoint_trx) {
+          if (!_meet_initial_trx && (gtid_log_event->get_ob_txn() != _txn_mapping.first ||
+                                        gtid_log_event->get_gtid_txn_id() != _txn_mapping.second)) {
+            OMS_INFO("Skip current transaction: {} <-> {}, which is earlier than checkpoint transaction: {} <-> {}",
+                gtid_log_event->get_ob_txn(),
+                gtid_log_event->get_gtid_txn_id(),
+                _txn_mapping.first,
+                _txn_mapping.second);
+            continue;
+          }
+
+          if (gtid_log_event->get_ob_txn() == _txn_mapping.first &&
+              gtid_log_event->get_gtid_txn_id() == _txn_mapping.second) {
+            OMS_INFO("Meet the checkpoint transaction: {} <-> {}(checkpoint: {}), and the checkpoint transaction: {} "
+                     "<-> {}, "
+                     "filter current transaction: {}, next trx gtid seq: {}",
+                gtid_log_event->get_ob_txn(),
+                gtid_log_event->get_gtid_txn_id(),
+                gtid_log_event->get_checkpoint(),
+                _txn_mapping.first,
+                _txn_mapping.second,
+                _filter_checkpoint_trx,
+                _filter_checkpoint_trx ? _txn_gtid_seq + 1 : _txn_gtid_seq);
+
+            _meet_initial_trx = true;
+            if (_filter_checkpoint_trx) {
+              _txn_gtid_seq += 1;
+              _filter_util_checkpoint_trx = true;
+              continue;
+            } else {
+              OMS_INFO(
+                  "No longer skip current transaction: {} due to filter checkpoint trx: [false]", _txn_mapping.first);
+              _filter_util_checkpoint_trx = false;
+            }
+          } else if (_meet_initial_trx || (!_meet_initial_trx && gtid_log_event->get_checkpoint() >
+                                                                     s_meta.cdc_config()->start_timestamp())) {
+            OMS_INFO("No longer skip current transaction: {} <-> {}, since the checkpoint transaction [{} <-> {}] has "
+                     "already been skipped or is later than checkpoint transaction: {} > {}.",
+                gtid_log_event->get_ob_txn(),
+                gtid_log_event->get_gtid_txn_id(),
+                _txn_mapping.first,
+                _txn_mapping.second,
+                gtid_log_event->get_checkpoint(),
+                s_meta.cdc_config()->start_timestamp());
+            _filter_util_checkpoint_trx = false;
+          }
+        }
+        _valid_events_coming = true;
+        _index_record.set_before_mapping(_index_record.get_current_mapping());
+        if (_first_gtid_seq == 0) {
+          _first_gtid_seq = gtid_log_event->get_gtid_txn_id();
+        }
+
+        this->_txn_gtid_seq = gtid_log_event->get_gtid_txn_id() + 1;
+        std::pair<std::string, int64_t> current_mapping(
+            gtid_log_event->get_ob_txn(), gtid_log_event->get_gtid_txn_id());
+        _index_record.set_current_mapping(current_mapping);
+        g_gtid_manager->mark_event(false, event->get_checkpoint(), _index_record.get_current_mapping());
+
+        _index_record.set_checkpoint(event->get_checkpoint() / 1000000);
+        Counter::instance().mark_checkpoint(event->get_checkpoint());
+        Counter::instance().mark_timestamp(
+            gtid_log_event->get_last_committed() * 1000000 + gtid_log_event->get_sequence_number());
+        OMS_DEBUG("current ob txn: {}, gtid txn id: {}, checkpoint: {}",
+            event->get_ob_txn(),
+            _index_record.get_current_mapping().second,
+            _index_record.get_checkpoint());
+        break;
+      }
+      case XID_EVENT: {
+        if (_filter_util_checkpoint_trx) {
+          if (!_meet_initial_trx) {
+            continue;
+          }
+          _filter_util_checkpoint_trx = false;
+          OMS_INFO(
+              "No longer skip record due to meet commit record for checkpoint transaction: {}", _txn_mapping.first);
+          continue;
+        }
+        auto xid_event = dynamic_cast<XidEvent*>(event);
+        OMS_ATOMIC_INC(this->_xid);
+        xid_event->set_xid(this->_xid);
+        if (this->_cur_pos + event->get_header()->get_event_length() > s_meta.binlog_config()->max_binlog_size()) {
+          is_rotate = true;
+        }
+        break;
+      }
+      case QUERY_EVENT: {
+        if (_filter_util_checkpoint_trx) {
+          OMS_DEBUG("Skip record with type [query event]");
+          continue;
+        }
+        auto query_event = dynamic_cast<QueryEvent*>(event);
+        if (query_event->is_ddl() &&
+            this->_cur_pos + event->get_header()->get_event_length() > s_meta.binlog_config()->max_binlog_size()) {
+          is_rotate = true;
+        }
+        break;
+      }
+      default: {
+        if (_filter_util_checkpoint_trx) {
+          OMS_INFO("Skip record with type [update] in transaction: {}", event->get_ob_txn());
+          continue;
+        }
+        // do nothing
+      }
+    }
+
+    const uint64_t len = event->get_header()->get_event_length();
+    this->_cur_pos += len;
+    event->get_header()->set_next_position(this->_cur_pos);
+    event->set_filter(false);
+    if (is_rotate) {
+      rotate_binlog_file(_last_record_ts, event_batch);
+    }
+  }
+  event_batch.index_record = _index_record;
+  return OMS_OK;
+}
+
+int64_t BinlogStorage::persistent_binlog(unsigned char* buffer, size_t size, BinlogIndexRecord& index_record)
+{
+  if (FsUtil::append_file(_file_name, buffer, size) == OMS_FAILED) {
+    return OMS_FAILED;
+  }
+  update_index_record(index_record);
+  return OMS_OK;
+}
+
+int64_t BinlogStorage::rotate(ObLogEvent* event, MsgBuf& buffer, std::size_t size, BinlogIndexRecord& index_record)
 {
   RotateEvent* rotate_event = ((RotateEvent*)event);
   if (rotate_event->get_op() != RotateEvent::INIT) {
-    // purge expired binlogs according to BINLOG_EXPIRE_LOGS_SECONDS and BINLOG_EXPIRE_LOGS_SIZE
+    // purge expired binlog according to BINLOG_EXPIRE_LOGS_SECONDS and BINLOG_EXPIRE_LOGS_SIZE
     purge_expired_binlog(index_record);
 
     if (rotate_current_binlog(buffer, size, rotate_event, index_record) != OMS_OK) {
       return OMS_FAILED;
     }
-
+    // The rotation file must be placed on disk before the index file.
+    int64_t buff_pos = init_binlog_file(rotate_event);
     if (OMS_OK != add_next_binlog_index(index_record, rotate_event)) {
       return OMS_FAILED;
     }
+    return buff_pos;
   }
-  size_t buff_pos = init_binlog_file(buffer, rotate_event);
+  int64_t buff_pos = init_binlog_file(rotate_event);
   return buff_pos;
 }
 
@@ -249,7 +531,7 @@ int BinlogStorage::add_next_binlog_index(BinlogIndexRecord& index_record, const 
   string bin_path = string(".") + BINLOG_DATA_DIR + next_file;
   index_record.set_index(rotate_event->get_index());
   index_record.set_file_name(bin_path);
-  index_record.set_position(0);
+  index_record.set_position(_cur_pos);
   if (OMS_OK != g_index_manager->add_index(index_record)) {
     return OMS_FAILED;
   }
@@ -265,6 +547,8 @@ int BinlogStorage::rotate_current_binlog(
   if (!rotate_event->is_existed()) {
     // When the rotate event is not generated, the rotate event information should be supplemented
     auto* data = static_cast<unsigned char*>(malloc(rotate_event->get_header()->get_event_length()));
+    // this->_cur_pos += rotate_event->get_header()->get_event_length();
+    // rotate_event->get_header()->set_next_position(4);
     size_t ret = rotate_event->flush_to_buff(data);
     buffer.push_back(reinterpret_cast<char*>(data), ret);
     size += ret;
@@ -324,7 +608,7 @@ void BinlogStorage::purge_expired_binlog(BinlogIndexRecord& index_record)
 
     for (auto iter = index_records.begin(); iter != index_records.end();) {
       if (index_record.equal_to(*(*iter))) {
-        iter++;
+        ++iter;
         continue;
       }
       if (now_s - (*iter)->get_checkpoint() < s_meta.binlog_config()->binlog_expire_logs_seconds()) {
@@ -357,13 +641,13 @@ void BinlogStorage::purge_expired_binlog(BinlogIndexRecord& index_record)
   if (s_meta.binlog_config()->binlog_expire_logs_size() > 0) {
     for (auto r_iter = index_records.rbegin(); r_iter != index_records.rend();) {
       if (index_record.equal_to(*(*r_iter))) {
-        r_iter++;
+        ++r_iter;
         continue;
       }
 
       if (total_binlog_size < s_meta.binlog_config()->binlog_expire_logs_size()) {
         total_binlog_size += (*r_iter)->get_position();
-        r_iter++;
+        ++r_iter;
       } else {
         OMS_INFO("Binlog [{}] with last gtid [{}] exceeds binlog expiration logs size: {} + {} > {}",
             (*r_iter)->get_file_name(),
@@ -414,5 +698,302 @@ void BinlogStorage::purge_expired_binlog(BinlogIndexRecord& index_record)
       index_records.front()->get_file_name(),
       index_records.back()->get_file_name());
 }
+int BinlogStorage::init_restart_point(const BinlogIndexRecord& index_record, GtidLogEvent* event)
+{
+  bool latest_heartbeat_checkpoint = false;
+  uint64_t trx_ts = (event == nullptr) ? 0 : event->get_last_committed();
+  GtidSeq gtid_seq;
+  int has_last_gtid = g_gtid_manager->get_latest_gtid_seq(gtid_seq);
 
+  // If there is no event for a long time(default 60min), the last heartbeat checkpoint will be used as start_timestamp
+  int interval = gtid_seq.get_commit_version_start() - index_record.get_checkpoint();
+  if (OMS_OK == has_last_gtid &&
+      (interval > s_config.gtid_heartbeat_duration_s.val() ||
+          interval > s_meta.binlog_config()->binlog_expire_logs_seconds()) &&
+      gtid_seq.get_commit_version_start() > trx_ts &&
+      gtid_seq.get_gtid_start() == index_record.get_current_mapping().second && gtid_seq.get_xid_start().empty() &&
+      gtid_seq.get_trxs_num() == 0) {
+    latest_heartbeat_checkpoint = true;
+    _filter_util_checkpoint_trx = false;
+    _filter_checkpoint_trx = false;
+    s_meta.cdc_config()->set_start_timestamp(gtid_seq.get_commit_version_start());
+    _txn_gtid_seq = gtid_seq.get_gtid_start() + 1;
+  } else {
+    if (_txn_gtid_seq == index_record.get_current_mapping().second) {
+      _txn_mapping.first = index_record.get_current_mapping().first;
+      _txn_mapping.second = _txn_gtid_seq;
+    } else if (_txn_gtid_seq == index_record.get_before_mapping().second) {
+      _txn_mapping.first = index_record.get_before_mapping().first;
+      _txn_mapping.second = _txn_gtid_seq;
+    } else {
+      OMS_ERROR("Failed to match gtid seq for the last gtid event(transaction): {}", _txn_gtid_seq);
+      return OMS_FAILED;
+    }
+
+    uint64_t timestamp;
+    if (_txn_mapping.first.empty()) {
+      timestamp = index_record.get_checkpoint();
+      _txn_gtid_seq = _txn_gtid_seq + 1;
+    } else {
+      if (has_last_gtid == OMS_FAILED) {
+        OMS_INFO("No gtid seq, using checkpoint in index as start timestamp");
+        timestamp = index_record.get_checkpoint();
+      } else {
+        if (OMS_OK != g_gtid_manager->get_first_le_gtid_seq(_txn_gtid_seq, gtid_seq)) {
+          OMS_ERROR("Failed to obtain checkpoint less than or equal to last gtid: {}", _txn_gtid_seq);
+          return OMS_FAILED;
+        }
+        timestamp = gtid_seq.get_commit_version_start();
+      }
+    }
+    s_meta.cdc_config()->set_start_timestamp(timestamp);
+  }
+
+  OMS_INFO("Init restarting point based on latest heartbeat checkpoint: {}, info:\n"
+           "the last index record: {}"
+           "the based on gtid seq: {}\n"
+           "the last gtid event: gtid_txn_id: {}, timestamp: {}",
+      latest_heartbeat_checkpoint,
+      index_record.to_string(),
+      gtid_seq.serialize(),
+      _txn_gtid_seq,
+      trx_ts);
+  return OMS_OK;
+}
+
+std::string previous_gtids_string(const std::vector<GtidMessage*>& previous_gtids)
+{
+  std::string previous_gtids_str;
+  for (auto pre_gtid : previous_gtids) {
+    previous_gtids_str.append(pre_gtid->format_string()).append(",");
+  }
+  return previous_gtids_str;
+}
+
+int BinlogStorage::recover_safely()
+{
+  BinlogIndexRecord index_record;
+  g_index_manager->get_latest_index(index_record);
+  uint64_t file_size = FsUtil::file_size(index_record.get_file_name());
+
+  uint64_t next_index = index_record.get_index() + 1;
+  auto* rotate_event = new RotateEvent(
+      BINLOG_MAGIC_SIZE, binlog::CommonUtils::fill_binlog_file_name(next_index), Timer::now() / 1000000, file_size);
+  bool rotate_existed = false;
+  uint8_t checksum_flag = Config::instance().binlog_checksum.val() ? CRC32 : OFF;
+
+  /*
+   * !!! Scenario 1: Starting binlog instance for the first time
+   */
+  if (index_record.get_file_name().empty() || index_record.get_position() == 0) {
+    // If the gtid mapping relationship is specified, we should start the binlog instance from the specified mapping
+    bool is_specified_gtid = false;
+    if (s_meta.binlog_config()->initial_ob_txn_gtid_seq() > 0 || !s_meta.binlog_config()->initial_ob_txn_id().empty()) {
+      is_specified_gtid = true;
+      _txn_mapping.first = s_meta.binlog_config()->initial_ob_txn_id();
+      _txn_mapping.second = s_meta.binlog_config()->initial_ob_txn_gtid_seq();
+      _txn_gtid_seq = _txn_mapping.second;
+    }
+    _filter_util_checkpoint_trx = !(_txn_mapping.first.empty());
+    _filter_checkpoint_trx = false;
+
+    // If started for the first time and no start_timestamp is specified, set to the current time
+    if (s_meta.cdc_config()->start_timestamp() == 0) {
+      s_meta.cdc_config()->set_start_timestamp(Timer::now_s());
+    }
+    rotate_event->set_op(RotateEvent::INIT);
+    OMS_INFO(
+        "First start with specified gtid mapping: {}, start_timestamp: {}, initial transaction: {} <> {}, filter: {}, ",
+        is_specified_gtid,
+        s_meta.cdc_config()->start_timestamp(),
+        _txn_mapping.first,
+        _txn_mapping.second,
+        _filter_util_checkpoint_trx);
+  } else {
+    std::vector<GtidLogEvent*> gtid_events;
+    defer(release_vector(gtid_events));
+    int64_t offset = 0;
+    if (OMS_OK != seek_gtid_event(index_record.get_file_name(),
+                      gtid_events,
+                      rotate_existed,
+                      checksum_flag,
+                      _xid,
+                      _previous_gtid_messages,
+                      offset)) {
+      delete rotate_event;
+      return OMS_FAILED;
+    }
+    if (offset >= 0 && offset != index_record.get_position() && offset != file_size) {
+      OMS_ERROR("The next position of the last binlog event is not equal to file [{}] size: {} != {}",
+          index_record.get_file_name(),
+          offset,
+          index_record.get_position());
+      delete rotate_event;
+      return OMS_FAILED;
+    }
+    OMS_INFO("Seeked [{}] gtid events(transactions) from the last binlog file: {}, rotate existed: {}",
+        gtid_events.size(),
+        index_record.to_string(),
+        rotate_existed);
+
+    // !!! Scenario 2: After last starting/rotating the binlog file, no ddl or dml has come yet
+    if (gtid_events.empty()) {
+      _txn_gtid_seq = index_record.get_current_mapping().second;
+      if (OMS_OK != init_restart_point(index_record, nullptr)) {
+        delete rotate_event;
+        return OMS_FAILED;
+      }
+
+      if (_filter_util_checkpoint_trx) {
+        _filter_util_checkpoint_trx = !(_txn_mapping.first.empty());
+        _filter_checkpoint_trx = !(index_record.get_before_mapping().first.empty());
+      }
+    } else {
+      // !!! Scenario 3: The last transaction in the current binlog file are complete
+      GtidLogEvent* event = gtid_events.back();
+      _txn_gtid_seq = event->get_gtid_txn_id();
+      if (OMS_OK != init_restart_point(index_record, event)) {
+        delete rotate_event;
+        return OMS_FAILED;
+      }
+    }
+    rotate_event->set_op(RotateEvent::ROTATE);
+    OMS_INFO("Safely recover, start timestamp: {}, current transaction: {} <> {}, start gtid: {}, filter: {}, filter "
+             "checkpoint trx: {}",
+        s_meta.cdc_config()->start_timestamp(),
+        _txn_mapping.first,
+        _txn_mapping.second,
+        _txn_gtid_seq,
+        _filter_util_checkpoint_trx,
+        _filter_checkpoint_trx);
+  }
+
+  std::vector<GtidMessage*> previous_gtids;
+  uint64_t last_gtid = (_filter_util_checkpoint_trx && _filter_checkpoint_trx) ? _txn_gtid_seq : _txn_gtid_seq - 1;
+  merge_previous_gtids(last_gtid, previous_gtids);
+  std::string previous_gtids_str = join_vector_str(previous_gtids, gtid_str_generator);
+  std::string gtid_executed_str;
+  g_sys_var->get_global_var("gtid_executed", gtid_executed_str);
+  if (strcmp(previous_gtids_str.c_str(), gtid_executed_str.c_str()) != 0) {
+    OMS_ERROR("[Unexpected behaviour] previous gtids inited by convert is not equal to gtid_executed: {} != {}",
+        previous_gtids_str,
+        gtid_executed_str);
+    delete rotate_event;
+    return OMS_FAILED;
+  }
+  rotate_event->set_next_previous_gtids(previous_gtids);
+
+  rotate_event->get_header()->set_timestamp(s_meta.cdc_config()->start_timestamp());
+  rotate_event->set_existed(rotate_existed);
+  rotate_event->set_index(rotate_event->get_op() == RotateEvent::INIT ? next_index - 1 : next_index);
+  rotate_event->set_next_binlog_file_name(
+      CommonUtils::fill_binlog_file_name(rotate_event->get_op() == RotateEvent::INIT ? next_index - 1 : next_index));
+
+  if (checksum_flag == OFF && rotate_event->get_checksum_flag() == CRC32) {
+    // todo why?
+    rotate_event->get_header()->set_event_length(
+        rotate_event->get_header()->get_event_length() - rotate_event->get_checksum_len());
+
+    rotate_event->get_header()->set_next_position(
+        rotate_event->get_header()->get_next_position() - rotate_event->get_checksum_len());
+    rotate_event->set_checksum_flag(OFF);
+  }
+
+  auto next_previous_gtids = previous_gtids_string(previous_gtids);
+  OMS_INFO("Rotate current binlog: {}(type: {}), next previous gtids: {}",
+      rotate_event->print_event_info(),
+      rotate_event->get_op(),
+      next_previous_gtids);
+
+  _first_gtid_seq = 0;
+  _binlog_file_index = rotate_event->get_op() == RotateEvent::INIT ? next_index - 1 : next_index;
+  set_start_pos(previous_gtids);
+  g_gtid_manager->init_start_timestamp(s_meta.cdc_config()->start_timestamp());
+
+  OMS_INFO("Binlog convert init binlog file index: {}, start pos: {}", _binlog_file_index, this->_cur_pos);
+  MsgBuf buffer;
+  size_t buffer_offset = 0;
+  defer(delete rotate_event);
+  if (rotate(rotate_event, buffer, buffer_offset, index_record) != OMS_OK) {
+    OMS_ERROR("Failed to rotate binlog file: {}(type: {}), next previous gtids: {}",
+        rotate_event->print_event_info(),
+        rotate_event->get_op(),
+        next_previous_gtids);
+    return OMS_FAILED;
+  }
+  return OMS_OK;
+}
+
+void BinlogStorage::merge_previous_gtids(uint64_t last_gtid, std::vector<GtidMessage*>& previous_gtids)
+{
+  OMS_INFO("Previous gtid before merging: [{}], and current executed gtid range: [{}, {}]",
+      join_vector_str(_previous_gtid_messages, gtid_str_generator),
+      _first_gtid_seq,
+      last_gtid);
+  merge_gtid_before(_previous_gtid_messages, txn_range(_first_gtid_seq, last_gtid));
+  OMS_INFO("Next previous gtid after merging: {}", join_vector_str(_previous_gtid_messages, gtid_str_generator));
+
+  for (auto const& pre_gtid : _previous_gtid_messages) {
+    auto* gtid_msg = new GtidMessage();
+    gtid_msg->copy_from(*(pre_gtid));
+    previous_gtids.emplace_back(gtid_msg);
+  }
+}
+void BinlogStorage::set_start_pos(const std::vector<GtidMessage*>& previous_gtids)
+{
+  std::uint32_t checksum = 0;
+  if (Config::instance().binlog_checksum.val()) {
+    checksum = COMMON_CHECKSUM_LENGTH;
+  }
+  _cur_pos = BINLOG_START_FIXED_POS + checksum;
+  for (auto pre_gtid : previous_gtids) {
+    _cur_pos += pre_gtid->get_gtid_length();
+  }
+  OMS_INFO("Start pos after set: {}", _cur_pos);
+}
+
+void purge_expired_binlog()
+{
+  // purge expired binlogs according to BINLOG_EXPIRE_LOGS_SECONDS and BINLOG_EXPIRE_LOGS_SIZE
+  OMS_INFO("Asynchronous recycling of binlog files");
+  BinlogIndexRecord index_record;
+  g_index_manager->get_latest_index(index_record);
+  oceanbase::binlog::BinlogStorage::purge_expired_binlog(index_record);
+}
+
+int64_t BinlogStorage::rotate_binlog_file(uint64_t timestamp, SerializeEvent& event)
+{
+  if (this->_cur_pos > s_meta.binlog_config()->max_binlog_size()) {
+    this->_binlog_file_index++;
+    OMS_DEBUG("Next binlog file index rotation:{}", this->_binlog_file_index);
+    auto* rotate_event = new RotateEvent(BINLOG_MAGIC_SIZE,
+        binlog::CommonUtils::fill_binlog_file_name(this->_binlog_file_index),
+        timestamp,
+        this->_cur_pos);
+    rotate_event->set_op(RotateEvent::ROTATE);
+    rotate_event->set_index(this->_binlog_file_index);
+
+    std::vector<GtidMessage*> previous_gtids;
+    merge_previous_gtids(_txn_gtid_seq - 1, previous_gtids);
+
+    // set start pos after rotate
+    uint32_t pos_before_rotate = _cur_pos;
+    set_start_pos(previous_gtids);
+
+    OMS_INFO("[convert] Rotate to next binlog file: {}, pos_before_rotate: {}, max_binlog_size_bytes: {}, next start "
+             "pos: {}, next previous gtids: {}",
+        _binlog_file_index,
+        pos_before_rotate,
+        s_meta.binlog_config()->max_binlog_size(),
+        _cur_pos,
+        previous_gtids_string((previous_gtids)));
+
+    rotate_event->set_next_previous_gtids(previous_gtids);
+    _first_gtid_seq = 0;
+    event.rotate_events.push_back(rotate_event);
+    event.is_rotation = true;
+    return OMS_OK;
+  }
+  return OMS_OK;
+}
 }  // namespace oceanbase::binlog

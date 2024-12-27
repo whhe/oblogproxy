@@ -19,7 +19,7 @@
 using namespace oceanbase::binlog;
 TEST(TcpPortPool, init_pool)
 {
-  env_init(16, 16, 4, 8100, 512);
+  env_init(16, 16, 8100, 512,512);
 
   // case 1: failed
   TcpPortPool port_pool_0(8100, 0);
@@ -41,7 +41,7 @@ TEST(TcpPortPool, init_pool)
 
 TEST(TcpPortPool, take_port)
 {
-  env_init(16, 16, 4, 8100, 512);
+  env_init(16, 16, 8100, 512,512);
   uint16_t port;
 
   // case 1

@@ -23,8 +23,7 @@ static std::map<std::string, std::string> kep_mappings = {{"first_start_timestam
     {"rootserver_list", "rootserver_list"},
     {"cluster_url", "cluster_url"},
     {"cluster_user", "cluster_user"},
-    {"cluster_password", "cluster_password"},
-    {"memory_limit", "memory_limit"}};
+    {"cluster_password", "cluster_password"}};
 
 InstanceState value_of(uint8_t state)
 {
@@ -206,6 +205,7 @@ void InstanceMeta::init_obcdc_config(std::map<std::string, std::string>& instanc
         _config.table_whitelist.val().empty() ? tenant() + ".*.*" : _config.table_whitelist.val();
     _obcdc_config.table_whites.set(white_tables);
   }
+
   if (_obcdc_config.get("memory_limit").empty()) {
     _obcdc_config.add("memory_limit", _config.binlog_memory_limit.val());
   }
@@ -221,6 +221,7 @@ void InstanceMeta::init_obcdc_config(std::map<std::string, std::string>& instanc
   _obcdc_config.add("enable_output_invisible_column", "1");
   // 4.x enables to output row data in the order of column declaration
   _obcdc_config.add("enable_output_by_table_def", "1");
+  _obcdc_config.add("enable_output_virtual_generated_column", "1");
 
   // 2. convert ObcdcConfig to CdcConfig
   std::map<std::string, std::string> configs;
@@ -256,7 +257,7 @@ void InstanceMeta::convert_to_obcdc_config(ObcdcConfig& obcdc_config)
   obcdc_config.password.set(cdc_config()->cluster_password());
   obcdc_config.sys_user.set(cdc_config()->cluster_user());
   obcdc_config.sys_password.set(cdc_config()->cluster_password());
-  obcdc_config.add("memory_limit", cdc_config()->memory_limit());
+  // obcdc_config.add("memory_limit", cdc_config()->memory_limit());
   obcdc_config.add_all(cdc_config()->extra_obcdc_cfg());
 }
 

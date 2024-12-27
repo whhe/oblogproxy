@@ -25,14 +25,17 @@
 #include "cluster/cluster_config.h"
 #include "cluster/cluster_protocol.h"
 #include "binlog-instance/binlog_dumper_manager.h"
+#include "common_util.h"
+#include "release_event_helper.h"
 
 namespace oceanbase::binlog {
 static logproxy::Config& s_config = logproxy::Config::instance();
 extern ConnectionManager* g_connection_manager;
 extern BinlogDumperManager* g_dumper_manager;
 extern logproxy::ThreadPoolExecutor* g_executor;
-extern logproxy::ThreadPoolExecutor* g_obi_executor;
+extern logproxy::ThreadPoolExecutor* g_purge_binlog_executor;
 extern logproxy::ThreadPoolExecutor* g_sql_executor;
+extern shared_ptr<Disruptor::disruptor<ReleaseEvent>> g_disruptor;
 extern SysVar* g_sys_var;
 extern TcpPortPool* g_tcp_port_pool;
 extern ClusterProtocol* g_cluster;
@@ -42,13 +45,16 @@ static InstanceMeta& s_meta = InstanceMeta::instance();
 
 extern BinlogIndexManager* g_index_manager;
 extern GtidManager* g_gtid_manager;
+extern GeometryConverter* g_gis_converter;
 
-int env_init(uint32_t nof_work_threads, uint32_t obi_work_threads, uint32_t sql_work_threads, uint16_t start_tcp_port,
-    uint16_t reserved_ports_num);
+extern std::vector<shared_ptr<Disruptor::IWorkHandler<ReleaseEvent>>> g_release_event_handler;
+extern shared_ptr<Disruptor::RoundRobinThreadAffinedTaskScheduler> task_scheduler;
+int env_init(
+    uint32_t nof_work_threads, uint32_t sql_work_threads, uint16_t start_tcp_port, uint16_t reserved_ports_num);
 
 void env_deInit();
 
-int instance_env_init(uint32_t nof_work_threads);
+int instance_env_init(uint32_t nof_work_threads, uint32_t obi_convert_work_threads, uint32_t obi_purge_binlog_threads);
 
 void instance_env_deInit();
 }  // namespace oceanbase::binlog

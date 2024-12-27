@@ -18,9 +18,11 @@
 #include "log.h"
 #include "common.h"
 
+#include <env.h>
+
 namespace oceanbase::binlog {
 
-int set_column_metadata(unsigned char* begin, IColMeta& col_meta, std::string table_name)
+int set_column_metadata(unsigned char* begin, IColMeta& col_meta, const std::string& table_name)
 {
   long col_len = col_meta.getLength();
   switch (col_meta.getType()) {
@@ -44,12 +46,12 @@ int set_column_metadata(unsigned char* begin, IColMeta& col_meta, std::string ta
       int1store(begin, sizeof(double));
       return 1;
     case OB_TYPE_STRING:
-      col_len = col_len * charset_encoding_bytes(col_meta.getEncoding(), table_name, col_meta.getName());
+      col_len = col_len * charset_encoding_bytes(col_meta.getEncoding());
       *begin = (col_meta.getType() ^ ((col_len & 0x300) >> 4));
       *(begin + 1) = col_len;
       return 2;
     case OB_TYPE_VAR_STRING:
-      int2store(begin, col_len * charset_encoding_bytes(col_meta.getEncoding(), table_name, col_meta.getName()));
+      int2store(begin, col_len * charset_encoding_bytes(col_meta.getEncoding()));
       return 2;
     case OB_TYPE_DECIMAL:
     case OB_TYPE_NEWDECIMAL:
@@ -90,7 +92,7 @@ int set_column_metadata(unsigned char* begin, IColMeta& col_meta, std::string ta
       return 1;
     case OB_TYPE_VARCHAR:
       // default utf-8
-      int2store(begin, col_len * charset_encoding_bytes(col_meta.getEncoding(), table_name, col_meta.getName()));
+      int2store(begin, col_len * charset_encoding_bytes(col_meta.getEncoding()));
       return 2;
 
     case OB_TYPE_TIMESTAMP:
@@ -192,10 +194,12 @@ int remainder_bytes(int remainder)
 | gb18030  | China National Standard GB18030 | gb18030_chinese_ci  |      4 |
 +----------+---------------------------------+---------------------+--------+
  * @param charset
+ * @param table_name
+ * @param col_name
  * @return
  */
 
-int charset_encoding_bytes(std::string charset, std::string table_name, std::string col_name)
+int charset_encoding_bytes(const std::string& charset)
 {
   // OB default character set is utf8mb4
   if (charset.empty()) {
@@ -246,7 +250,6 @@ int charset_encoding_bytes(std::string charset, std::string table_name, std::str
 
   // It is not expected to go here. If it is a non-mysql character set, it is currently expressed with a maximum length
   // of 4
-  OMS_DEBUG("non-mysql character set:{},table:{},column:{}", charset, table_name, col_name);
   return 4;
 }
 
@@ -255,25 +258,20 @@ size_t year_gap(size_t real_year)
   return real_year - 1900;
 }
 
-size_t binary_to_hex(const std::string& binary, char* buff, int len)
+size_t binary_to_hex(const std::string& binary, char* buff, uint64_t len)
 {
   size_t i = 0;
-  size_t index = 0;
-  std::bitset<64> bit_max(std::stoull((binary.c_str())));
+  std::bitset<64> bit_max(std::stoull((binary)));
   std::string real = bit_max.to_string().substr(64 - len * 8, len * 8);
   for (; i < real.size(); i += 8) {
     std::bitset<8> bit_set{real.substr(i, 8)};
-    int1store(reinterpret_cast<unsigned char*>(buff + i / 8), bit_set.to_ulong());
-    index += 8;
-  }
-  if (index <= real.size()) {
-    std::bitset<8> bit_set{real.substr(index, real.size() - index)};
+    assert(buff != nullptr);
     int1store(reinterpret_cast<unsigned char*>(buff + i / 8), bit_set.to_ulong());
   }
   return len;
 }
 
-size_t convert_binlog_bit(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode, size_t& col_len)
+size_t convert_binlog_bit(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode, size_t& col_len)
 {
   col_len = col_meta.getPrecision();
   if (col_len <= 0) {
@@ -281,13 +279,14 @@ size_t convert_binlog_bit(IColMeta& col_meta, size_t data_len, char* data, MsgBu
   }
 
   auto* buff = static_cast<char*>(malloc((col_len + 7) / 8));
+  assert(buff != nullptr);
   size_t ret = binary_to_hex(data, buff, (col_len + 7) / 8);
   data_decode.push_back(buff, ret);
   assert(ret == (col_len + 7) / 8);
   return ret;
 }
 
-size_t convert_binlog_float(IColMeta& col_meta, char* data, MsgBuf& data_decode)
+size_t convert_binlog_float(IColMeta& col_meta, const char* data, MsgBuf& data_decode)
 {
   /*!
    * @brief https://dev.mysql.com/doc/refman/8.0/en/floating-point-types.html
@@ -309,7 +308,7 @@ size_t convert_binlog_float(IColMeta& col_meta, char* data, MsgBuf& data_decode)
   return sizeof(float);
 }
 
-size_t convert_binlog_double(char* data, MsgBuf& data_decode)
+size_t convert_binlog_double(const char* data, MsgBuf& data_decode)
 {
   double value = std::stod(data);
   char* buff = reinterpret_cast<char*>(&value);
@@ -318,13 +317,13 @@ size_t convert_binlog_double(char* data, MsgBuf& data_decode)
 }
 
 size_t convert_binlog_var_string(
-    IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode, std::string table_name, size_t& col_len)
+    IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode, size_t& col_len)
 {
   size_t ret = 0;
   char* buff;
   // The encoding of DB is set to empty, because there is currently an ambiguity, it can be either database or
   // tenant to avoid ambiguity, it is set to empty here
-  col_len *= charset_encoding_bytes(col_meta.getEncoding(), table_name, col_meta.getName());
+  col_len *= charset_encoding_bytes(col_meta.getEncoding());
 
   if (col_len > 255) {
     ret = 2;
@@ -341,7 +340,7 @@ size_t convert_binlog_var_string(
   return ret + data_len;
 }
 
-size_t convert_binlog_decimal(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode)
+size_t convert_binlog_decimal(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode)
 {
   // 1. get decimal and precision
   int precision = 10;
@@ -424,7 +423,10 @@ size_t convert_binlog_decimal(IColMeta& col_meta, size_t data_len, char* data, M
     }
   }
 
-  if (intg0x > 0) {
+  // Because during the processing of decimal data, we did not process leading zeros, because the decimal output from OB
+  // does not have leading zeros by default. Except for one case precision==scale, the expression of 0 on the integer
+  // bit needs to be removed
+  if (intg0x > 0 && orig_isize0 != 0) {
     std::string intg0x_str(data + sign_size, intg0x);
     int bytes_size = dig2bytes[intg0x];
     int32_t value = (atoi(intg0x_str.c_str()) % powers10[intg0x]) ^ mask;
@@ -480,7 +482,8 @@ size_t convert_binlog_decimal(IColMeta& col_meta, size_t data_len, char* data, M
       frac0x++;
     }
 
-    int32_t value = (atoi(frac_str.c_str())) ^ mask;
+    uint32_t value = (std::stoi(frac_str)) ^ mask;
+    assert(offset + bytes_size < orig_isize0 + orig_fsize0);
     switch (bytes_size) {
       case 1:
         hf_int1store(data_buff + offset, value);
@@ -513,7 +516,7 @@ size_t convert_binlog_decimal(IColMeta& col_meta, size_t data_len, char* data, M
   return orig_isize0 + orig_fsize0;
 }
 
-size_t convert_binlog_enum(IColMeta& col_meta, char* data, MsgBuf& data_decode)
+size_t convert_binlog_enum(IColMeta& col_meta, const char* data, MsgBuf& data_decode)
 {
   StrArray* array = col_meta.getValuesOfEnumSet();
   const char* enum_val;
@@ -539,7 +542,7 @@ size_t convert_binlog_enum(IColMeta& col_meta, char* data, MsgBuf& data_decode)
   return ret;
 }
 
-size_t convert_binlog_set(IColMeta& col_meta, char* data, MsgBuf& data_decode)
+size_t convert_binlog_set(IColMeta& col_meta, const char* data, MsgBuf& data_decode)
 {
   StrArray* array = col_meta.getValuesOfEnumSet();
   const char* set_val;
@@ -579,7 +582,7 @@ bool is_zero_date(const std::string& str)
   return std::equal(str.begin(), str.end(), "-9223372022400.000000");
 }
 
-size_t convert_binlog_timestamp(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode)
+size_t convert_binlog_timestamp(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode)
 {
   // set enable_convert_timestamp_to_unix_timestamp=1，1662034855.000000
   std::string str(data, data_len);
@@ -619,7 +622,7 @@ size_t convert_binlog_timestamp(IColMeta& col_meta, size_t data_len, char* data,
   return 4 + remainder_bytes(precision);
 }
 
-size_t convert_binlog_time(IColMeta& col_meta, char* data, MsgBuf& data_decode)
+size_t convert_binlog_time(IColMeta& col_meta, const char* data, MsgBuf& data_decode)
 {
   IDate date = str_2_idate(data);
   int precision = col_meta.getScale();
@@ -662,7 +665,7 @@ size_t convert_binlog_time(IColMeta& col_meta, char* data, MsgBuf& data_decode)
   return 3 + remainder_bytes(precision);
 }
 
-size_t convert_binlog_datetime(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode)
+size_t convert_binlog_datetime(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode)
 {
   std::string str(data, data_len);
   IDate date = str_2_idate(str);
@@ -720,7 +723,7 @@ size_t convert_binlog_datetime(IColMeta& col_meta, size_t data_len, char* data, 
   return 5 + remainder_bytes(precision);
 }
 
-size_t convert_binlog_year(size_t data_len, char* data, MsgBuf& data_decode)
+size_t convert_binlog_year(size_t data_len, const char* data, MsgBuf& data_decode)
 {
   std::string year_str(data, data_len);
   size_t real_year = atoi(year_str.c_str());
@@ -737,7 +740,7 @@ size_t convert_binlog_year(size_t data_len, char* data, MsgBuf& data_decode)
   return 1;
 }
 
-size_t convert_binlog_json(char* data, MsgBuf& data_decode, bool is_json_diff)
+size_t convert_binlog_json(const char* data, MsgBuf& data_decode, bool is_json_diff)
 {
   MsgBuf json;
   if (is_json_diff) {
@@ -756,61 +759,12 @@ size_t convert_binlog_json(char* data, MsgBuf& data_decode, bool is_json_diff)
   return 4 + byte_size;
 }
 
-int parse_ewkt(const std::string& ewkt, int& srid, std::string& wkt)
+size_t convert_binlog_geometry(size_t data_len, const char* data, MsgBuf& data_decode)
 {
-  size_t pos_srid_end = ewkt.find(';');
-  if (pos_srid_end == std::string::npos) {
-    srid = 0;
-    pos_srid_end = -1;
-  } else {
-    // Skip "SRID=" five characters
-    std::string srid_str = ewkt.substr(5, pos_srid_end - 5);
-    std::istringstream srid_stream(srid_str);
-    if (!(srid_stream >> srid)) {
-      return OMS_FAILED;
-    }
-  }
-  // Get WKT part
-  wkt = ewkt.substr(pos_srid_end + 1);
-  return OMS_OK;
+  return oceanbase::binlog::GeometryConverter::convert_wkt_to_wkb(data, data_decode);
 }
 
-size_t convert_binlog_geometry(size_t data_len, char* data, MsgBuf& data_decode)
-{
-  int srid;
-  std::string wkt;
-  if (parse_ewkt(data, srid, wkt) != OMS_OK) {
-    OMS_ERROR("Failed to parse EWKT format:{}", data);
-    return OMS_FAILED;
-  }
-
-  GDALAllRegister();
-  OGRSpatialReference spatial_ref;
-  OGRGeometry* geometry;
-  OGRErr err = OGRGeometryFactory::createFromWkt(wkt.c_str(), &spatial_ref, &geometry);
-  if (err != OGRERR_NONE) {
-    OMS_ERROR("Converting geometry from EWKT format failed");
-    return OMS_FAILED;
-  }
-  // convert geometry to wkb
-  size_t wkb_size = geometry->WkbSize();
-  // Encode the SRID as a 4-byte integer and add it to the beginning of the WKB
-  auto* buff = static_cast<unsigned char*>(malloc(wkb_size + 4 + 4));
-  // Then add the standard WKB
-  geometry->exportToWkb(wkbNDR, buff + 8);
-
-  // Clean up resources
-  OGRGeometryFactory::destroyGeometry(geometry);
-
-  // Clean OGR library
-  OGRCleanupAll();
-  int4store(buff, wkb_size + 4);
-  int4store(buff + 4, srid);
-  data_decode.push_back(reinterpret_cast<char*>(buff), wkb_size + 4 + 4);
-  return 4 + wkb_size + 4;
-}
-
-size_t convert_binlog_date(size_t data_len, char* data, MsgBuf& data_decode)
+size_t convert_binlog_date(size_t data_len, const char* data, MsgBuf& data_decode)
 {
   auto* buff = static_cast<unsigned char*>(malloc(3));
   std::string str(data, data_len);
@@ -858,8 +812,8 @@ int get_number_len(size_t number)
   return length;
 }
 
-size_t get_column_val_bytes(
-    IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode, std::string table_name, bool is_json_diff)
+size_t get_column_val_bytes(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode,
+    const std::string& table_name, bool is_json_diff)
 {
   size_t col_len = col_meta.getLength();
   switch (col_meta.getType()) {
@@ -875,7 +829,7 @@ size_t get_column_val_bytes(
     case OB_TYPE_STRING:
     case OB_TYPE_VAR_STRING:
     case OB_TYPE_VARCHAR: {
-      return convert_binlog_var_string(col_meta, data_len, data, data_decode, table_name, col_len);
+      return convert_binlog_var_string(col_meta, data_len, data, data_decode, col_len);
     }
     case OB_TYPE_DECIMAL:
     case OB_TYPE_NEWDECIMAL: {
@@ -1026,7 +980,7 @@ size_t convert_binlog_tiny_blob(size_t data_len, const char* data, MsgBuf& data_
 
 size_t int_two_complement(unsigned char* val, size_t len, const char* data)
 {
-  auto num = std::stoull(data);
+  const auto num = std::stoull(data);
   switch (len) {
     case 1:
       int1store(val, num);
@@ -1147,6 +1101,139 @@ IUnixTime str_2_unix_time(const std::string& str)
     unix_time.prefix_zero_num = unix_time.precision - get_number_len(unix_time.us);
   }
   return unix_time;
+}
+
+void serialize_before(ILogRecord* record, ITableMeta* table_meta, MsgBuf& before_val, size_t& before_pos,
+    unsigned char* before_bitmap, const int col_count)
+{
+  size_t data_len = 0;
+  StrArray* old_str_buf = record->parsedOldCols();
+  unsigned int old_col_count;
+  BinLogBuf* old_bin_log_buf = record->oldCols(old_col_count);
+  for (int i = 0; i < col_count; ++i) {
+    const char* data;
+    if (record->isParsedRecord()) {
+      old_str_buf->elementAt(i, data, data_len);
+    } else {
+      data = old_bin_log_buf[i].buf;
+      data_len = old_bin_log_buf[i].buf_used_size;
+    }
+    if (data_len <= 0) {
+      if (data == nullptr) {
+        before_bitmap[i / 8] |= (0x01 << ((i % 8)));
+        continue;
+      }
+    }
+    // Since some of the values obtained may not contain trailing zeros, which may cause problems in subsequent
+    // processing, performance is sacrificed here for defense.
+    std::string str(data, data_len);
+    before_pos +=
+        get_column_val_bytes(*((table_meta->getCol(i))), data_len, str.data(), before_val, table_meta->getName());
+  }
+}
+
+void serialize_after(ILogRecord* record, ITableMeta* table_meta, MsgBuf& after_val, size_t& after_pos,
+    const RowsEventType rows_event_type, unsigned char* after_bitmap, unsigned char*& partial_cols_bitmap,
+    const int col_count, bool& has_any_json_diff)
+{
+  size_t data_len = 0;
+  // after value
+  StrArray* new_str_buf = record->parsedNewCols();
+  unsigned int new_col_count;
+  BinLogBuf* new_bin_log_buf = record->newCols(new_col_count);
+
+  int json_col_index = 0;
+  for (int i = 0; i < col_count; ++i) {
+    const char* data;
+    bool is_json_diff;
+    if (record->isParsedRecord()) {
+      new_str_buf->elementAt(i, data, data_len);
+      size_t diff_col_size;
+      is_json_diff = record->parsedNewValueDiff(diff_col_size)[i];
+    } else {
+      data = new_bin_log_buf[i].buf;
+      data_len = new_bin_log_buf[i].buf_used_size;
+      is_json_diff = new_bin_log_buf[i].m_diff_val;
+    }
+
+    // null_bits
+    if (data_len <= 0 && data == nullptr) {
+      after_bitmap[i / 8] |= (0x01 << ((i % 8)));
+      is_json_diff = false;
+    } else {
+      is_json_diff = (rows_event_type == UPDATE) ? is_json_diff : false;
+      // col_value
+      std::string str(data, data_len);
+      after_pos += get_column_val_bytes(
+          *((table_meta->getCol(i))), data_len, str.data(), after_val, table_meta->getName(), is_json_diff);
+    }
+
+    // only UPDATE_AFTER may have diff partial value
+    if (table_meta->getCol(i)->getType() == OB_TYPE_JSON) {
+      if (is_json_diff && partial_cols_bitmap != nullptr) {
+        has_any_json_diff = true;
+        partial_cols_bitmap[json_col_index / 8] |= (0x01 << ((json_col_index % 8)));
+      }
+      json_col_index += 1;
+    }
+  }
+}
+size_t col_val_bytes(ILogRecord* record, ITableMeta* table_meta, MsgBuf& before_val, MsgBuf& after_val,
+    size_t& before_pos, size_t& after_pos, RowsEventType rows_event_type, unsigned char* before_bitmap,
+    unsigned char* after_bitmap, unsigned char*& partial_cols_bitmap, size_t& partial_cols_bytes)
+{
+  int col_count = table_meta->getColCount();
+  size_t col_bytes = 0;
+  if (rows_event_type != RowsEventType::INSERT) {
+    serialize_before(record, table_meta, before_val, before_pos, before_bitmap, col_count);
+  }
+
+  if (RowsEventType::UPDATE == rows_event_type) {
+    int json_col_count = 0;
+    for (int i = 0; i < col_count; ++i) {
+      json_col_count = (OB_TYPE_JSON == table_meta->getCol(i)->getType()) ? json_col_count + 1 : json_col_count;
+    }
+    if (json_col_count != 0) {
+      partial_cols_bytes = (json_col_count + 7) / 8;
+      partial_cols_bitmap = static_cast<unsigned char*>(malloc(partial_cols_bytes));
+      fill_bitmap(json_col_count, partial_cols_bytes, partial_cols_bitmap);
+    }
+  }
+
+  bool has_any_json_diff = false;
+  if (rows_event_type != DELETE) {
+    serialize_after(record,
+        table_meta,
+        after_val,
+        after_pos,
+        rows_event_type,
+        after_bitmap,
+        partial_cols_bitmap,
+        col_count,
+        has_any_json_diff);
+  }
+
+  // "partial_json" option is not enabled
+  if (!has_any_json_diff && partial_cols_bitmap != nullptr) {
+    free(partial_cols_bitmap);
+    partial_cols_bitmap = nullptr;
+    partial_cols_bytes = 0;
+  }
+
+  col_bytes += before_pos;
+  col_bytes += after_pos;
+  return col_bytes;
+}
+
+void fill_bitmap(int col_count, size_t col_bytes, unsigned char* bitmap)
+{
+  for (int i = 0; i < col_count / 8; ++i) {
+    bitmap[i] = 0x00;
+  }
+
+  if (col_count / 8 == col_bytes - 1) {
+    bitmap[col_bytes - 1] = (0xFF << (col_count % 8));
+  }
 }
 
 }  // namespace oceanbase::binlog

@@ -149,8 +149,9 @@ public:
   OMS_CONFIG_BOOL(binlog_checksum, true);
   OMS_CONFIG_INT64(binlog_convert_timeout_us, 100000);
   OMS_CONFIG_UINT32(binlog_nof_work_threads, 16);
-  OMS_CONFIG_UINT32(binlog_bc_work_threads, 2);
+  OMS_CONFIG_UINT32(binlog_purge_binlog_threads, 2);
   OMS_CONFIG_UINT32(binlog_sql_work_threads, 4);
+  OMS_CONFIG_UINT32(binlog_obi_column_work_threads, 10);
   OMS_CONFIG_UINT32(binlog_max_file_size_bytes, 1024 * 1024 * 512);  // 512MB
   OMS_CONFIG_UINT16(binlog_file_name_fill_zeroes_width, 6);          // fill zeroes width for mysql binlog file name
   OMS_CONFIG_UINT64(binlog_heartbeat_interval_us, 100000);           // The interval at which heartbeat events are sent
@@ -158,7 +159,7 @@ public:
   OMS_CONFIG_BOOL(binlog_ddl_convert, true);
   OMS_CONFIG_BOOL(binlog_ddl_convert_ignore_unsupported_ddl,
       true);  // Ignore unsupported DDL. If set to false, unsupported DDL will also be dropped into the binlog.
-  OMS_CONFIG_STR(binlog_memory_limit, "3G");
+  OMS_CONFIG_STR(binlog_memory_limit, "4G");
   OMS_CONFIG_STR(binlog_working_mode, "storage");
 
   // for tcp port
@@ -196,8 +197,10 @@ public:
   OMS_CONFIG_STR(database_ip, "");
   OMS_CONFIG_UINT16(database_port, 2883);
   OMS_CONFIG_STR(database_name, "");
+  OMS_CONFIG_STR(database_properties, "");
   OMS_CONFIG_STR(user, "");
   OMS_CONFIG_STR(password, "");
+  OMS_CONFIG_INT32(min_pool_size, 30);
   OMS_CONFIG_UINT64(push_pull_interval_us, 1000000);
   OMS_CONFIG_UINT64(task_interval_us, 1000000);
 
@@ -232,6 +235,26 @@ public:
   OMS_CONFIG_UINT16(max_incr_gtid_seqs_num, 200);
 
   OMS_CONFIG_BOOL(enable_auth, false);
+  // 2 to the Nth power
+  OMS_CONFIG_INT32(binlog_convert_ring_buffer_size, 1024);
+  OMS_CONFIG_INT32(binlog_convert_number_of_concurrences, 12);
+  OMS_CONFIG_INT32(binlog_convert_thread_size, 16);
+
+  // 2 to the Nth power
+  OMS_CONFIG_INT32(binlog_serialize_ring_buffer_size, 1024);
+  OMS_CONFIG_INT32(binlog_serialize_thread_size, 10);
+  OMS_CONFIG_UINT32(binlog_serialize_parallel_size, 8);
+
+  // 2 to the Nth power, binlog record release queue size
+  OMS_CONFIG_INT32(binlog_release_ring_buffer_size, 1024);
+  OMS_CONFIG_INT32(binlog_release_thread_size, 4);
+  OMS_CONFIG_UINT32(binlog_release_parallel_size, 2);
+
+  // pre_allocated_memory_for_each_event
+  OMS_CONFIG_UINT32(preallocated_memory_bytes, 2 * 1024 * 1024);
+
+  // When the pre-allocated memory is insufficient, the default expansion step size
+  OMS_CONFIG_UINT32(preallocated_expansion_memory_bytes, 8 * 1024);
 };
 
 int load_configs(const std::string& config_file, rapidjson::Document& doc);

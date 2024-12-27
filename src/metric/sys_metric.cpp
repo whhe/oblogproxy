@@ -516,7 +516,7 @@ void collect_by_pid_name(const std::string& pid_name, ProcessGroupMetric* proc_g
     }
 
     std::string proc_name = status.find("Name:")->second;
-    if (!std::equal(proc_name.begin(), proc_name.end(), pid_name.c_str())) {
+    if (proc_name != pid_name) {
       continue;
     }
 
@@ -547,7 +547,7 @@ void collect_by_pid_name(const std::string& pid_name, ProcessGroupMetric* proc_g
     /*!
      * @brief Binlog mode collects resource indicators of non-main processes
      */
-    if (Config::instance().binlog_mode.val() && !std::equal(proc_name.begin(), proc_name.end(), "logproxy")) {
+    if (Config::instance().binlog_mode.val() && proc_name != "logproxy") {
       collect_pro_disk(process_metric->disk_status(), path + DATA_DIR);
     } else {
       collect_pro_disk(process_metric->disk_status(), path);

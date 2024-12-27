@@ -85,7 +85,6 @@ public:
   virtual int query_nodes(std::vector<Node*>& nodes, std::set<State> node_states) = 0;
 
   virtual int query_nodes(std::set<std::string>& node_ids, std::map<std::string, Node>& nodes) = 0;
-
   /*!
    * @brief Query the corresponding instances according to the value specified by condition
    * @param instance_name

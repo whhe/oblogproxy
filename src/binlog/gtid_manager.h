@@ -94,9 +94,9 @@ public:
 
   void update_gtid_executed(uint64_t gtid);
 
-private:
   void init_gtid_seq();
 
+private:
   int init_gtid_variables();
 
   int save_gtid_seq(const GtidSeq& gtid_seq);

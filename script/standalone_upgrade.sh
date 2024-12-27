@@ -74,7 +74,7 @@ function generate_create_binlog_sql() {
   cluster_url=$(jq -r ".OblogConfig.configs.cluster_url" ${tenant_conf_file})
   cluster_user=$(jq -r ".OblogConfig.configs.cluster_user" ${tenant_conf_file})
   cluster_password=$(jq -r ".OblogConfig.configs.cluster_password" ${tenant_conf_file})
-  echo "cluster_url: ${cluster_url}, cluster_user: ${cluster_user}, cluster_password: ${cluster_password}"
+  echo "cluster_url: ${cluster_url}, cluster_user: ${cluster_user}"
 
   index_file="/home/ds/oblogproxy/run/${cluster}/${tenant}/data/mysql-bin.index"
   first_timestamp=$(awk -F$'\t' 'NR=1 {print $5}' ${index_file} | head -n 1)

@@ -240,8 +240,16 @@ private:
 
   uint64_t _checkpoint = 0;
   uint8_t _checksum_flag = OFF;
+  /*!
+   * Used to identify whether the current event needs to be filtered
+   */
+  bool _filter = true;
 
 public:
+  bool is_filter() const;
+
+  void set_filter(bool filter);
+
   const std::string& get_ob_txn() const;
 
   void set_ob_txn(const std::string& ob_txn);
@@ -690,6 +698,10 @@ public:
 
   std::string print_event_info() override;
 
+  void mark_ddl(bool is_ddl);
+
+  bool is_ddl() const;
+
 private:
   uint32_t _thread_id;
   uint32_t _query_exec_time;
@@ -701,6 +713,7 @@ private:
   std::string _status_vars;
   std::string _dbname;
   std::string _sql_statment;
+  bool _is_ddl = false;
 };
 
 /*
@@ -717,7 +730,7 @@ class XidEvent : public ObLogEvent {
 public:
   XidEvent() = default;
 
-  ~XidEvent() = default;
+  ~XidEvent() override;
 
   size_t flush_to_buff(unsigned char* data) override;
 
@@ -734,8 +747,8 @@ public:
   std::string print_event_info() override;
 
 private:
-  uint64_t _xid;
-  size_t _column_count;
+  uint64_t _xid{};
+  size_t _column_count{};
 };
 
 /*
@@ -768,7 +781,7 @@ class TableMapEvent : public ObLogEvent {
 public:
   TableMapEvent() = default;
 
-  ~TableMapEvent();
+  ~TableMapEvent() override;
 
   size_t flush_to_buff(unsigned char* data) override;
 
@@ -821,20 +834,20 @@ public:
   std::string print_event_info() override;
 
 private:
-  uint64_t _table_id;
-  uint16_t _flags;
+  uint64_t _table_id{};
+  uint16_t _flags{};
 
   std::string _db_name;
   // len(_db_name)
-  size_t _db_len;
+  size_t _db_len{};
   std::string _tb_name;
   // len(_tb_name)
-  size_t _tb_len;
-  size_t _column_count;
-  unsigned char* _column_type;
-  size_t _metadata_len;
-  unsigned char* _metadata;
-  unsigned char* _null_bits;
+  size_t _tb_len{};
+  size_t _column_count{};
+  unsigned char* _column_type = nullptr;
+  size_t _metadata_len{};
+  unsigned char* _metadata = nullptr;
+  unsigned char* _null_bits = nullptr;
 };
 
 enum RowsEventType { INSERT, DELETE, UPDATE };
@@ -928,11 +941,11 @@ public:
 
   void set_after_pos(size_t after_pos);
 
-  virtual void deserialize(unsigned char* buff) = 0;
+  void deserialize(unsigned char* buff) override = 0;
 
   std::string print_event_info() override;
 
-  virtual ~RowsEvent();
+  ~RowsEvent() override;
 
 private:
   uint64_t _table_id = 0;
@@ -1091,15 +1104,19 @@ struct BinlogTrxOverview {
   uint64_t last_complete_trx_end_pos = 0;
   uint64_t last_complete_trx_gtid = 0;
   uint64_t trx_need_truncated_gtid = 0;
+  uint64_t trx_specify_truncated_gtid = 0;
+  uint64_t trx_specify_truncated_end_pos = 0;
 
   void log_detail()
   {
     OMS_INFO("[Binlog overview] has previous gtids event: {}, last_complete_trx_end_pos: {}, last_complete_trx_gtid: {}"
-             ", trx_need_truncated_gtid: {}",
+             ", trx_need_truncated_gtid: {}, trx_specify_truncated_gtid: {}, trx_specify_truncated_end_pos: {}",
         has_previous_gtids_event,
         last_complete_trx_end_pos,
         last_complete_trx_gtid,
-        trx_need_truncated_gtid);
+        trx_need_truncated_gtid,
+        trx_specify_truncated_gtid,
+        trx_specify_truncated_end_pos);
   }
 };
 

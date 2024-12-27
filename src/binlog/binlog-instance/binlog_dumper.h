@@ -17,6 +17,7 @@
 #include <fstream>
 #include <sys/stat.h>
 #include <sys/inotify.h>
+#include <shared_mutex>
 
 #include "thread.h"
 #include "msg_buf.h"
@@ -82,7 +83,7 @@ public:
 
   std::pair<std::string, uint64_t> send_position();
 
-  std::string send_position_str() const;
+  std::string send_position_str();
 
   std::uint64_t accumulated_events_send();
 
@@ -94,6 +95,7 @@ public:
 
 private:
   std::pair<std::string, uint64_t> _send_position;
+  std::shared_mutex _shared_mutex;
   std::atomic<uint64_t> _accumulate_send_count{0};
   std::atomic<uint64_t> _send_count{0};
   std::uint64_t _eps_within_interval = 0;

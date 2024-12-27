@@ -55,7 +55,6 @@ public:
     SENDER_POLL_US = 2,
     SENDER_ENCODE_US = 3,
     SENDER_SEND_US = 4,
-    BINLOG_DELAY_US = 5,
   };
 
   void count_key(CountKey key, uint64_t count);
@@ -101,7 +100,7 @@ private:
   volatile uint64_t _checkpoint_us = _timestamp_us;
   volatile uint64_t _count_timestamp_us = _timestamp_us;
 
-  CountItem _counts[6]{{"RFETCH"}, {"ROFFER"}, {"SPOLL"}, {"SENCODE"}, {"SSEND"}, {"BINLOG_DELAY_US"}};
+  CountItem _counts[5]{{"RFETCH"}, {"ROFFER"}, {"SPOLL"}, {"SENCODE"}, {"SSEND"}};
 
   std::map<std::string, std::function<int64_t()>> _gauges;
 

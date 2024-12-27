@@ -15,11 +15,16 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <log.h>
 namespace oceanbase {
 namespace logproxy {
 static inline void int1store(unsigned char* T, uint8_t A);
 static inline void int1store(unsigned char* T, uint8_t A)
 {
+  if (T == nullptr) {
+    OMS_ERROR("Illegal address, abnormal exit");
+    return;
+  }
   *((uint8_t*)T) = A;
 }
 

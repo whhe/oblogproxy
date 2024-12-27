@@ -930,9 +930,9 @@ bool MySQLResultSet::to_model(Model* model)
   if (model->model_type() == ModelTypeEnum::e().OBJECT) {
     for (size_t i = 0; i < col_count; ++i) {
       const std::string& key = cols[i].name();
-      if (!((Object*)model)->set_plain(key, rows[index].fields()[i])) {
+      if (!dynamic_cast<Object*>(model)->set_plain(key, rows[index].fields()[i])) {
         OMS_ERROR("select impl set result key {} failed", key.c_str());
-        return -1;
+        return false;
       }
     }
 

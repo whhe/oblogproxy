@@ -20,6 +20,8 @@
 #include "binlog/json_parser.h"
 #include "ogrsf_frmts.h"
 
+#include <log_record.h>
+
 using namespace oceanbase::logproxy;
 
 namespace oceanbase::binlog {
@@ -115,20 +117,22 @@ struct IUnixTime {
  *  Assemble the column meta in the mysql table map event
  *
  */
-int set_column_metadata(unsigned char* begin, IColMeta& col_meta, std::string table_name);
+int set_column_metadata(unsigned char* begin, IColMeta& col_meta, const std::string& table_name);
 
 /**
  * @param col_meta
  * @param data_len
  * @param data
  * @param data_decode
+ * @param table_name
+ * @param is_diff_partial
  * @param pos
  * @return
  */
-size_t get_column_val_bytes(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode,
-    std::string table_name, bool is_diff_partial = false);
+size_t get_column_val_bytes(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode,
+    const std::string& table_name, bool is_diff_partial = false);
 
-size_t convert_binlog_geometry(size_t data_len, char* data, MsgBuf& data_decode);
+size_t convert_binlog_geometry(size_t data_len, const char* data, MsgBuf& data_decode);
 
 size_t int_two_complement(unsigned char* val, size_t len, const char* data);
 
@@ -154,7 +158,7 @@ int remainder_bytes(int remainder);
  * @param charset
  * @return
  */
-int charset_encoding_bytes(std::string charset, std::string table_name, std::string col_name);
+int charset_encoding_bytes(const std::string& charset);
 
 size_t convert_binlog_tiny_blob(size_t data_len, const char* data, MsgBuf& data_decode);
 
@@ -174,36 +178,49 @@ size_t convert_binlog_short(const char* data, MsgBuf& data_decode);
 
 size_t convert_binlog_long(const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_date(size_t data_len, char* data, MsgBuf& data_decode);
+size_t convert_binlog_date(size_t data_len, const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_json(char* data, MsgBuf& data_decode, bool is_json_diff);
+size_t convert_binlog_json(const char* data, MsgBuf& data_decode, bool is_json_diff);
 
-size_t convert_binlog_year(size_t data_len, char* data, MsgBuf& data_decode);
+size_t convert_binlog_year(size_t data_len, const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_datetime(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode);
+size_t convert_binlog_datetime(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_time(IColMeta& col_meta, char* data, MsgBuf& data_decode);
+size_t convert_binlog_time(IColMeta& col_meta, const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_timestamp(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode);
+size_t convert_binlog_timestamp(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_set(IColMeta& col_meta, char* data, MsgBuf& data_decode);
+size_t convert_binlog_set(IColMeta& col_meta, const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_enum(IColMeta& col_meta, char* data, MsgBuf& data_decode);
+size_t convert_binlog_enum(IColMeta& col_meta, const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_decimal(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode);
+size_t convert_binlog_decimal(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode);
 
 size_t convert_binlog_var_string(
-    IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode, std::string table_name, size_t& col_len);
+    IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode, size_t& col_len);
 
-size_t convert_binlog_double(char* data, MsgBuf& data_decode);
+size_t convert_binlog_double(const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_float(IColMeta& col_meta, char* data, MsgBuf& data_decode);
+size_t convert_binlog_float(IColMeta& col_meta, const char* data, MsgBuf& data_decode);
 
-size_t convert_binlog_bit(IColMeta& col_meta, size_t data_len, char* data, MsgBuf& data_decode, size_t& col_len);
+size_t convert_binlog_bit(IColMeta& col_meta, size_t data_len, const char* data, MsgBuf& data_decode, size_t& col_len);
 
 int get_number_len(size_t number);
 
 size_t cutout_or_pad_zero(size_t number, int target_length);
 
 size_t fixed_len(size_t len);
+
+void serialize_before(ILogRecord* record, ITableMeta* table_meta, MsgBuf& before_val, size_t& before_pos,
+    unsigned char* before_bitmap, int col_count);
+
+void serialize_after(ILogRecord* record, ITableMeta* table_meta, MsgBuf& after_val, size_t& after_pos,
+    RowsEventType rows_event_type, unsigned char* after_bitmap, unsigned char*& partial_cols_bitmap, int col_count,
+    bool& has_any_json_diff);
+
+size_t col_val_bytes(ILogRecord* record, ITableMeta* table_meta, MsgBuf& before_val, MsgBuf& after_val,
+    size_t& before_pos, size_t& after_pos, RowsEventType rows_event_type, unsigned char* before_bitmap,
+    unsigned char* after_bitmap, unsigned char*& partial_cols_bitmap, size_t& partial_cols_bytes);
+
+void fill_bitmap(int col_count, size_t col_bytes, unsigned char* bitmap);
 }  // namespace oceanbase::binlog

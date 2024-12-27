@@ -66,6 +66,8 @@ public:
 
   static int64_t append_file(const std::string& file, MsgBuf& content);
 
+  static int64_t append_file(const std::string& file, unsigned char* data, size_t size);
+
   static FILE* fopen_binary(const std::string& name, const std::string& mode = "ab+");
 
   static void fclose_binary(FILE* fs);

@@ -45,11 +45,15 @@ ObCdcAccess::~ObCdcAccess()
 int ObCdcAccess::init(const std::map<std::string, std::string>& configs, uint64_t start_timestamp)
 {
   _start_timestamp = start_timestamp;
+  std::string pattern = "password";
 
   OMS_INFO("======== Start libobcdc configs ======== ");
   for (auto& entry : configs) {
     if (entry.first == "first_start_timestamp") {
       OMS_INFO("{}={}", entry.first, _start_timestamp);
+    } else if (entry.first.find(pattern) != std::string::npos) {
+      // 脱敏密码相关的entry
+      OMS_INFO("{}={}", entry.first, "******");
     } else {
       OMS_INFO("{}={}", entry.first, entry.second);
     }

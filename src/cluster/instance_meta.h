@@ -63,6 +63,33 @@ struct BinlogConfig : public Object {
   MODEL_DEF_STR(instance_password, "");
   MODEL_DEF_STR(instance_password_sha1, "");
 
+  // Concurrent convert options
+  MODEL_DEF_UINT32(record_queue_size, 200000);
+  MODEL_DEF_UINT32(read_wait_num, 20000);
+  MODEL_DEF_UINT32(storage_wait_num, 100000);
+  MODEL_DEF_UINT32(read_timeout_us, 10000);
+  MODEL_DEF_UINT32(storage_timeout_us, 10000);
+  // 2 to the Nth power
+  MODEL_DEF_UINT32(binlog_convert_ring_buffer_size, 1024);
+  MODEL_DEF_UINT32(binlog_convert_number_of_concurrences, 12);
+  MODEL_DEF_UINT32(binlog_convert_thread_size, 16);
+
+  // 2 to the Nth power
+  MODEL_DEF_INT(binlog_serialize_ring_buffer_size, 8);
+  MODEL_DEF_INT(binlog_serialize_thread_size, 10);
+  MODEL_DEF_INT(binlog_serialize_parallel_size, 8);
+
+  // 2 to the Nth power, binlog record release queue size
+  MODEL_DEF_INT(binlog_release_ring_buffer_size, 1024);
+  MODEL_DEF_INT(binlog_release_thread_size, 4);
+  MODEL_DEF_INT(binlog_release_parallel_size, 2);
+
+  // pre_allocated_memory_for_each_event
+  MODEL_DEF_UINT64(preallocated_memory_bytes, 2 * 1024 * 1024);
+
+  // When the pre-allocated memory is insufficient, the default expansion step size
+  MODEL_DEF_UINT32(preallocated_expansion_memory_bytes, 8 * 1024);
+
   BinlogConfig(bool initialize)
   {}
 };
@@ -92,7 +119,7 @@ struct CdcConfig : public Object {
   MODEL_DEF_STR(cluster_password, "");
   MODEL_DEF_STR(extra_obcdc_cfg, "");
 
-  MODEL_DEF_STR(memory_limit, "3G");
+  MODEL_DEF_STR(memory_limit, "4G");
 
   CdcConfig(bool initialize)
   {}

@@ -29,6 +29,8 @@ set(DEP_VAR ${OMS_PROJECT_BUILD_PATH}/deps)
 message(STATUS "CMAKE_MODULE_PATH: ${CMAKE_MODULE_PATH}")
 message(STATUS "DEP_VAR: ${DEP_VAR}")
 
+set(JAVA_HOME $ENV{JAVA_HOME})
+message(STATUS "JAVA_HOME: ${JAVA_HOME}")
 
 add_compile_definitions(WITH_US_TIMESTAMP=1)
 
@@ -47,7 +49,7 @@ include(env)
 # set the project version from file VERSION.txt
 file(STRINGS ${CMAKE_SOURCE_DIR}/rpm/oboms-logproxy-VER.txt PROJECT_VERSION
         LIMIT_COUNT 1
-        REGEX "^[ \t]*[0-9]+\\.[0-9]+\\.[0-9]+[ \t]*$")
+        REGEX "^[ \t]*[0-9]+(\\.[0-9]+)+[ \t]*$")
 project(oms-logproxy VERSION ${PROJECT_VERSION} LANGUAGES CXX)
 
 ############## cmake common options #########################################################################
@@ -96,9 +98,8 @@ endif ()
 
 
 include(protobuf)
-########### libcdc && logmsg #############################################################################################
 if (WITH_DEPS)
-message(FATAL_ERROR "Unsupported build WITH_DEPS=ON in opensource.")
+    message(FATAL_ERROR "Unsupported build WITH_DEPS=ON in opensource.")
 endif ()
 include(obcdc)
 include(lz4)
@@ -111,6 +112,9 @@ include(logmsg_wrapper)
 include(proj)
 include(gdal)
 include(prometheus-cpp)
+include(jemalloc)
+include(boost)
+#add_subdirectory(src/disruptor-cpp/Disruptor)
 
 file(GLOB PROTO_FILES ${CMAKE_SOURCE_DIR}/proto/*.proto)
 message(STATUS "logproxy protos: ${PROTO_FILES}")
@@ -130,6 +134,7 @@ endforeach ()
 add_library(logproxy_proto STATIC ${PROTO_SRCS})
 target_include_directories(logproxy_proto PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/proto)
 target_link_libraries(logproxy_proto PUBLIC protobuf)
+include_directories(${DEP_VAR}/usr/local/oceanbase/deps/devel/include/oblogmsg)
 #=====================================> sql parser <===========================================
 # Build sql-parser library
 set(PARSER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/sqlparser)
@@ -139,6 +144,19 @@ add_library(sqlparser STATIC IMPORTED GLOBAL)
 add_dependencies(sqlparser parser_build)
 set_target_properties(sqlparser PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/src/sqlparser/libsqlparser.a)
 target_include_directories(sqlparser INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src/sqlparser/src)
+
+set(Boost_USE_STATIC_LIBS ON)
+set(Boost_USE_MULTITHREADED ON)
+set(Boost_INCLUDE_DIR ${DEP_VAR}/usr/local/oceanbase/deps/devel/include)
+find_package(Boost REQUIRED COMPONENTS system thread)
+if (Boost_FOUND)
+    include_directories(${Boost_INCLUDE_DIRS})
+    link_directories(${Boost_LIBRARY_DIRS})
+endif ()
+
+message(STATUS "BOOST_LIBRARY_DIRS: ${Boost_LIBRARY_DIRS}")
+message(STATUS "Boost_INCLUDE_DIRS: ${Boost_INCLUDE_DIRS}")
+message(STATUS "Boost_LIBRARIES: ${Boost_LIBRARIES}")
 
 
 #===================================> define new targets <=======================================
@@ -151,35 +169,41 @@ file(GLOB COMMON_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/communication/*.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/metric/*.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/obaccess/*.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/disruptor/*.cpp
 )
-add_library(common STATIC ${COMMON_SRC})
+add_library(common STATIC ${COMMON_SRC}
+        src/common/buffer_manager.hpp)
 target_compile_definitions(common PUBLIC __OMS_VERSION__=\"${PROJECT_VERSION}-${GIT_VERSION}\")
 target_include_directories(common
         PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/proto
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/common/
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/logmsg/
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/disruptor/
 )
 include(gflags)
 find_package(ZLIB REQUIRED)
 target_link_libraries(common
         PUBLIC logproxy_proto
         PUBLIC logmsg_wrapper # for drcmsg/oblogmsg
-        PUBLIC libevent::core
-        PUBLIC libevent::pthreads
-        PUBLIC libevent::extra
         PUBLIC jsoncpp
         PUBLIC rapidjson
         PUBLIC lz4
         PUBLIC libmariadbcpp
-        PUBLIC Threads::Threads
         PUBLIC spdlog
         PUBLIC sqlparser
         PUBLIC gdal
         PUBLIC proj
         PUBLIC prometheus-cpp
+        #        PUBLIC DisruptorStatic
+        PUBLIC libevent::core
+        PUBLIC libevent::pthreads
+        PUBLIC libevent::extra
+        PUBLIC jemalloc
+        PUBLIC Threads::Threads
         PUBLIC ZLIB::ZLIB
         PUBLIC OpenSSL::SSL
+        PUBLIC boost
 )
 if (COMMUNITY_BUILD)
     target_compile_definitions(common PUBLIC _OBLOG_MSG_)
@@ -216,19 +240,19 @@ file(STRINGS ${OUTPUT} file_contents)
 set(version_list)
 
 foreach (line IN LISTS file_contents)
-if (NOT line)
+    if (NOT line)
         continue()
-endif ()
-string(REGEX MATCH "oceanbase-ce-cdc-([0-9]+\\.[0-9]+\\.[0-9]+)" version_match ${line})
-if (version_match)
+    endif ()
+    string(REGEX MATCH "oceanbase-ce-cdc-([0-9]+\\.[0-9]+\\.[0-9]+)" version_match ${line})
+    if (version_match)
         list(APPEND version_list ${CMAKE_MATCH_1})
-endif ()
+    endif ()
 endforeach ()
 
 list(REMOVE_DUPLICATES version_list)
 
 foreach (version IN LISTS version_list)
-add_obcdc_access_library(obcdc-ce-${version} libobcdcce${version})
+    add_obcdc_access_library(obcdc-ce-${version} libobcdcce${version})
 endforeach ()
 
 # obcdc_base
@@ -254,17 +278,15 @@ target_link_libraries(oblogreader_static
 # target mysql_protocol
 add_library(mysql_protocol INTERFACE)
 target_include_directories(mysql_protocol INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/mysql-protocol)
-# ===== target ob_binlog_server =====
+
+# target ddl_parser
+add_library(ddl_parser STATIC ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/ddl-parser/ddl_parser.cpp)
+target_include_directories(ddl_parser PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/ddl-parser)
+
 include(etransfer)
-add_library(ddl_converter STATIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/ddl-converter/ddl_converter.cpp
-)
-target_link_libraries(ddl_converter
-        PUBLIC common
+target_link_libraries(ddl_parser
+        PRIVATE common
         PUBLIC etransfer
-)
-target_include_directories(ddl_converter
-        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/ddl-converter
 )
 
 add_library(cluster STATIC
@@ -291,7 +313,6 @@ add_library(binlog_instance_static STATIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/instance_socket_listener.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/binlog_converter.cpp   # binlog converter ----->
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/clog_reader_routine.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/binlog_convert.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/binlog_storage.cpp     # <----- binlog converter
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/binlog_dumper.cpp      # binlog dumper
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/binlog_func.cpp
@@ -315,13 +336,17 @@ add_library(binlog_instance_static STATIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/token_bucket.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/rate_limiter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/binlog_dumper_manager.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/password.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/password.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/parallel_convert.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance/parallel_convert.h
+        src/binlog/release_event_helper.cpp
+        src/binlog/release_event_helper.h)
 target_include_directories(binlog_instance_static
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog/binlog-instance)
 target_link_libraries(binlog_instance_static
         PRIVATE mysql_protocol
-        PUBLIC ddl_converter
+        PUBLIC ddl_parser
         PUBLIC common
         PRIVATE obcdc_base
         PRIVATE rapidjson
@@ -389,56 +414,61 @@ endif ()
 
 include(gtest)
 include(GoogleTest)
-# target test_base
-message(STATUS "target test_base")
-add_executable(test_base
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_entry.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_binlog_event_convert.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_binlog_event.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_data_type.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_index_file.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_thread_pool_executor.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_tcp_port_pool.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_ddl_parser.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_sql_parser.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_gtid_manager.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_selection_strategy.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_instance_tasks.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_instance_meta.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_gtid_inspector.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_defer.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_aes.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_codec.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_compress.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_conf.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_http.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_message_buffer.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_net.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_ob_mysql.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_ob_sha1.cpp
-        #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_queue.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_binlog_dumper.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_json_parse.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_model.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_mysql_connection.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_database_protocol.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_sys_metric.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_prometheus.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_rate_limiter.cpp
-)
-target_include_directories(test_base
-        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/test
-        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog)
-target_link_libraries(test_base
-        PRIVATE cluster
-        PRIVATE common
-        PRIVATE logproxy_static
-        PRIVATE binlog_instance_static
-        PRIVATE binlog_manager_static
-)
-target_link_options(test_base PUBLIC -static-libstdc++ ${ASAN_LINK_OPTION})
-gtest_discover_tests(test_base)
-
+if (WITH_TEST)
+    # target test_base
+    message(STATUS "target test_base")
+    add_executable(test_base
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_entry.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_binlog_event_convert.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_binlog_event.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_data_type.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_index_file.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_thread_pool_executor.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_tcp_port_pool.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_ddl_parser.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_sql_parser.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_gtid_manager.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_selection_strategy.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_instance_tasks.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_instance_meta.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_gtid_inspector.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_defer.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_aes.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_codec.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_compress.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_conf.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_http.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_message_buffer.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_net.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_ob_mysql.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_ob_sha1.cpp
+            #            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_queue.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_binlog_dumper.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_json_parse.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_model.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_mysql_connection.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_database_protocol.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_sys_metric.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_prometheus.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_rate_limiter.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/test/test_disruptor.cpp
+    )
+    target_include_directories(test_base
+            PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/test
+            PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/binlog
+            PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/disruptor-cpp/Disruptor
+    )
+    target_link_libraries(test_base
+            PRIVATE cluster
+            PUBLIC common
+            PUBLIC ddl_parser
+            PRIVATE logproxy_static
+            PUBLIC binlog_instance_static
+            PRIVATE binlog_manager_static
+    )
+    target_link_options(test_base PUBLIC -static-libstdc++ ${ASAN_LINK_OPTION})
+    gtest_discover_tests(test_base)
+endif ()
 #===== oblogreader =====
 add_executable(oblogreader ${CMAKE_CURRENT_SOURCE_DIR}/src/oblogreader/oblogreader_entry.cpp)
 target_link_options(oblogreader PRIVATE -rdynamic)

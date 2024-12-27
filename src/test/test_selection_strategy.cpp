@@ -121,7 +121,7 @@ void init_env()
 {
   s_config.cluster_mode.set(false);
   s_config.cluster_protocol.set("STANDALONE");
-  env_init(16, 16, 4, 8100, 512);
+  env_init(16, 16, 8100, 512,512);
 }
 
 TEST(SelectionStrategy, load_balancing_node_normal)

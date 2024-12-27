@@ -40,7 +40,7 @@ int Config::load(const std::string& file)
     }
   }
 
-  OMS_INFO("Success to load config: {} ", to_string(true));
+  OMS_INFO("Success to load config: {} ", to_string(true, true));
   return OMS_OK;
 }
 

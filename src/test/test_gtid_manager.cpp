@@ -21,7 +21,7 @@ using namespace oceanbase::logproxy;
 TEST(GtidSeqManager, save_and_get_and_purge_gtid_seq)
 {
   FsUtil::remove(GTID_SEQ_FILENAME, false);
-  instance_env_init(32);
+  instance_env_init(32, 0);
   s_config.gtid_seq_compressed_trx_size.set(3);
   s_config.gtid_seq_compressed_interval_s.set(5);
   s_meta.binlog_config()->set_server_uuid("89fbcea2-db65-11e7-a851-fa163e618bac");

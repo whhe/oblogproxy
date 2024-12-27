@@ -10,12 +10,18 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#ifndef BUILD_OPENSOURCE
 #pragma once
-#include <jni.h>
 #include "common.h"
 #include "log.h"
+
+#ifdef BUILD_OPENSOURCE
+#include "convert/convert_tool.h"
+#else
+#include <jni.h>
 #include "config.h"
+#include <mutex>
+#endif
+
 namespace oceanbase::binlog {
 class DdlParser {
 public:
@@ -23,8 +29,9 @@ public:
 
   int init();
 
-  int parser(std::string& origin, std::string& result);
+  int parse(std::string& origin, std::string& result);
 
+#ifndef BUILD_OPENSOURCE
   std::string jstring_2_string(JNIEnv* env, jstring jstr);
 
   jstring string_2_jstring(JNIEnv* env, const std::string& str);
@@ -38,6 +45,7 @@ private:
   JNIEnv* _env = nullptr; /* pointer to native method interface */
   jclass _cls = nullptr;
   jmethodID _mid;
+  std::mutex _jvm_mutex;
+#endif
 };
 }  // namespace oceanbase::binlog
-#endif

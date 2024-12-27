@@ -244,7 +244,7 @@ IoResult RegisterSlaveCmdProcessor::process(Connection* conn, PacketBuf& payload
   payload.read_uint4(master_id);
 
   OMS_STREAM_INFO << "Start register slave on connection " << conn->endpoint() << ", host " << host << ", port " << port
-                  << ", server_id " << server_id << ", user " << user << ", password " << password;
+                  << ", server_id " << server_id << ", user " << user;
 
   // currently do nothing
   return conn->send_ok_packet();

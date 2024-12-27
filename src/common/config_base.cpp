@@ -65,6 +65,23 @@ std::string ConfigBase::to_string(bool formatted) const
   return str;
 }
 
+std::string ConfigBase::to_string(bool formatted, bool desensitized) const
+{
+  std::string str;
+  std::string pattern = "password";
+
+  for (auto& entry : _configs) {
+    bool is_password_field = false;
+    if (entry.first.find(pattern) != std::string::npos) {
+      is_password_field = true;
+    }
+
+    str.append(entry.first).append("=").append(desensitized && is_password_field ? "******" : entry.second->debug_str()).append(",");
+    str.append(formatted ? "\n" : "");
+  }
+  return str;
+}
+
 void EncryptedConfigItem::from_str(const std::string& val)
 {
   if (val.empty()) {

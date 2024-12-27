@@ -32,11 +32,12 @@ int MetaDBProtocol::register_node()
    */
   Node node;
   node.set_id(this->get_node_info().id());
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn(true);
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   int ret = NodeDAO::query_node(conn, node);
   if (ret != OMS_OK) {
     OMS_ERROR("Failed to pull the node information [node_id:{},node_ip:{},node_port:{}] from the cluster",
@@ -86,12 +87,12 @@ int MetaDBProtocol::unregister_node()
   condition.set_id(this->get_node_info().id());
   condition.set_ip(this->get_node_info().ip());
   condition.set_port(this->get_node_info().port());
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
-
+  defer(this->get_sql_connection().release_connection(conn));
   if (NodeDAO::query_nodes(conn, nodes, condition) != OMS_OK) {
     OMS_ERROR("Failed to pull the node information [node_id:{},node_ip:{},node_port:{}] from the cluster",
         get_node_info().id(),
@@ -120,11 +121,12 @@ int MetaDBProtocol::unregister_node()
 
 int MetaDBProtocol::publish_task(Task& task)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
 
   if (TaskDAO::add_task(conn, task) != OMS_OK) {
     OMS_ERROR("Failed to publish task to cluster,task:{}", task.serialize_to_json());
@@ -136,11 +138,12 @@ int MetaDBProtocol::publish_task(Task& task)
 
 int MetaDBProtocol::add_instance(const BinlogEntry& instance, Task& task)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   conn->setAutoCommit(false);
   defer(conn->setAutoCommit(true));
 
@@ -162,11 +165,12 @@ int MetaDBProtocol::add_instance(const BinlogEntry& instance, Task& task)
 
 int MetaDBProtocol::drop_instances(std::vector<Task>& task_vec)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   conn->setAutoCommit(false);
   defer(conn->setAutoCommit(true));
 
@@ -191,11 +195,12 @@ int MetaDBProtocol::drop_instances(std::vector<Task>& task_vec)
 
 int MetaDBProtocol::fetch_task(const Task& task, std::vector<Task*>& tasks)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
 
   if (TaskDAO::query_tasks_by_entry(conn, tasks, task) != OMS_OK) {
     OMS_ERROR("Failed to fetch task from cluster,task:{}", task.serialize_to_json());
@@ -224,11 +229,12 @@ int MetaDBProtocol::fetch_recent_offline_task(const string& instance_name, Task&
 
 int MetaDBProtocol::query_all_nodes(std::vector<Node*>& nodes)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
 
   if (NodeDAO::query_all_nodes(conn, nodes) != OMS_OK) {
     OMS_ERROR("Failed to query all nodes from cluster");
@@ -239,11 +245,12 @@ int MetaDBProtocol::query_all_nodes(std::vector<Node*>& nodes)
 
 int MetaDBProtocol::query_nodes(vector<Node*>& nodes, const Node& node)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
 
   if (NodeDAO::query_nodes(conn, nodes, node) != OMS_OK) {
     OMS_ERROR("Failed to query nodes from cluster");
@@ -266,16 +273,20 @@ MetaDBProtocol::MetaDBProtocol(
     ClusterConfig* cluster_config, TaskExecutorCb& task_executor_cb, InstanceFailoverCb& failover_cb)
     : ClusterProtocol(cluster_config, task_executor_cb, failover_cb)
 {
-  if (_sql_connection.connect(cluster_config->database_ip(),
+  sql::Properties properties(CommonUtils::serialized_kv_config(cluster_config->database_properties()));
+  if (_sql_connection.init(cluster_config->database_ip(),
           cluster_config->database_port(),
           cluster_config->user(),
           cluster_config->password(),
-          cluster_config->database_name()) != OMS_OK) {
-    OMS_ERROR("Failed to initialize metabase connection,ip:{},port:{},user:{},database:{}",
+          cluster_config->database_name(),
+          properties,
+          cluster_config->min_pool_size()) != OMS_OK) {
+    OMS_ERROR("Failed to initialize metabase connection,ip:{},port:{},user:{},database:{},properties:{}",
         cluster_config->database_ip(),
         cluster_config->database_port(),
         cluster_config->password(),
-        cluster_config->database_name());
+        cluster_config->database_name(),
+        cluster_config->database_properties());
     return;
   }
 }
@@ -287,31 +298,34 @@ MySQLConnection& MetaDBProtocol::get_sql_connection()
 
 int MetaDBProtocol::query_instances(std::vector<BinlogEntry*>& instances, const BinlogEntry& condition)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return BinlogInstanceDAO::query_instance_by_entry(conn, instances, condition);
 }
 
 int MetaDBProtocol::query_nodes(vector<Node*>& nodes, const std::set<State> node_states)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return NodeDAO::query_nodes(conn, nodes, node_states);
 }
 
 int MetaDBProtocol::query_nodes(set<std::string>& node_ids, map<std::string, Node>& nodes)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   if (node_ids.empty()) {
     OMS_ERROR("Empty node ids");
     return OMS_FAILED;
@@ -321,41 +335,45 @@ int MetaDBProtocol::query_nodes(set<std::string>& node_ids, map<std::string, Nod
 
 int MetaDBProtocol::query_instances(vector<BinlogEntry*>& instances, const set<std::string>& instance_names)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return BinlogInstanceDAO::query_instances(conn, instances, instance_names);
 }
 
 int MetaDBProtocol::query_instances(vector<BinlogEntry*>& instances, const set<InstanceState>& instance_states)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return BinlogInstanceDAO::query_instances(conn, instances, instance_states);
 }
 
 int MetaDBProtocol::update_instances(const BinlogEntry& instance, const BinlogEntry& condition)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return BinlogInstanceDAO::update_instance(conn, instance, condition);
 }
 
 int MetaDBProtocol::add_instance(const BinlogEntry& instance)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return BinlogInstanceDAO::add_instance(conn, instance);
 }
 
@@ -363,38 +381,41 @@ int MetaDBProtocol::update_task(Task& task)
 {
   Task condition;
   condition.set_task_id(task.task_id());
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return TaskDAO::update_task(conn, task, condition);
 }
 
 int MetaDBProtocol::update_tasks(Task& task, const Task& condition)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return TaskDAO::update_task(conn, task, condition);
 }
 
 int MetaDBProtocol::update_instance(const BinlogEntry& instance)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   BinlogEntry condition;
   condition.set_instance_name(instance.instance_name());
   return BinlogInstanceDAO::update_instance(conn, instance, condition);
 }
 
 void MetaDBProtocol::query_config_item_by_granularity(
-    ConfigTemplate& config, const std::unique_ptr<sql::Connection>& conn, const ConfigTemplate& condition)
+    ConfigTemplate& config, sql::Connection* conn, const ConfigTemplate& condition)
 {
   auto* temp = new ConfigTemplate(true);
   defer(delete temp);
@@ -407,11 +428,12 @@ void MetaDBProtocol::query_config_item_by_granularity(
 int MetaDBProtocol::query_init_instance_config(ConfigTemplate& config, const std::string& key_name,
     const std::string& group, const std::string& cluster, const std::string& tenant, const std::string& instance)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   ConfigTemplate condition;
   condition.set_key_name(key_name);
   /*
@@ -459,11 +481,12 @@ int MetaDBProtocol::query_instance_configs(std::vector<ConfigTemplate*>& configs
 int MetaDBProtocol::query_configs_by_granularity(
     std::map<std::string, std::string>& configs, Granularity granularity, const std::string& scope)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   ConfigTemplate condition;
   condition.set_scope(scope);
   condition.set_granularity(granularity);
@@ -473,11 +496,12 @@ int MetaDBProtocol::query_configs_by_granularity(
 int MetaDBProtocol::query_instance_configs(std::map<std::string, std::string>& configs, const std::string& group,
     const std::string& cluster, const std::string& tenant, const std::string& instance)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   ConfigTemplate condition;
   /*
    * Query the global configuration first, and then query the configuration level by level. If it exists, the global
@@ -518,11 +542,12 @@ int MetaDBProtocol::query_instance_configs(std::map<std::string, std::string>& c
 int MetaDBProtocol::replace_config(
     std::string key, std::string value, Granularity granularity, const std::string& scope)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   ConfigTemplate entry;
   entry.set_key_name(key);
   entry.set_value(value);
@@ -533,11 +558,12 @@ int MetaDBProtocol::replace_config(
 
 int MetaDBProtocol::delete_config(std::string key, Granularity granularity, const std::string& scope)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   ConfigTemplate entry;
   entry.set_key_name(key);
   entry.set_granularity(granularity);
@@ -547,32 +573,35 @@ int MetaDBProtocol::delete_config(std::string key, Granularity granularity, cons
 
 int MetaDBProtocol::query_all_instances(vector<BinlogEntry*>& instances)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return BinlogInstanceDAO::query_all_instances(conn, instances);
 }
 
 int MetaDBProtocol::query_node_by_id(const string& node_id, Node& node)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   node.set_id(node_id);
   return NodeDAO::query_node(conn, node);
 }
 
 int MetaDBProtocol::query_task_by_id(const string& task_id, Task& task)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   Task condition;
   condition.set_task_id(task_id);
   return TaskDAO::query_task_by_entry(conn, task, condition);
@@ -580,11 +609,12 @@ int MetaDBProtocol::query_task_by_id(const string& task_id, Task& task)
 
 int MetaDBProtocol::query_instance_by_name(const string& instance_name, BinlogEntry& entry)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   return BinlogInstanceDAO::query_instance(conn, entry, instance_name);
 }
 
@@ -593,11 +623,12 @@ int MetaDBProtocol::query_master_instance(
 {
   PrimaryInstance primary_instance;
   PrimaryInstance condition;
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn(true);
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   condition.set_cluster(cluster);
   condition.set_tenant(tenant);
   int ret = PrimaryInstanceDAO::query_primary_instance(conn, primary_instance, condition);
@@ -614,11 +645,12 @@ int MetaDBProtocol::determine_primary_instance(
 {
   PrimaryInstance primary_instance;
   PrimaryInstance condition;
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   condition.set_cluster(cluster);
   condition.set_tenant(tenant);
   int ret = PrimaryInstanceDAO::query_primary_instance(conn, primary_instance, condition);
@@ -673,11 +705,12 @@ int MetaDBProtocol::reset_master_instance(
 {
   PrimaryInstance primary_instance;
   PrimaryInstance condition;
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
   condition.set_cluster(cluster);
   condition.set_tenant(tenant);
   condition.set_master_instance(instance_name);
@@ -698,11 +731,12 @@ int MetaDBProtocol::reset_master_instance(
 
 int MetaDBProtocol::query_tenant_surviving_instances(string& cluster, string& tenant, vector<BinlogEntry>& instances)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
 
   return BinlogInstanceDAO::query_tenant_surviving_instances(conn, cluster, tenant, instances);
 }
@@ -725,11 +759,12 @@ int MetaDBProtocol::query_instances(vector<BinlogEntry*>& instances, std::string
       break;
   }
 
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
     return OMS_FAILED;
   }
+  defer(this->get_sql_connection().release_connection(conn));
 
   return BinlogInstanceDAO::query_instances_by_node(conn, instances, node);
 }
@@ -763,12 +798,12 @@ int MetaDBProtocol::boundary_gtid_seq(
 
 int MetaDBProtocol::boundary_gtid_seq(const string& instance, pair<InstanceGtidSeq, InstanceGtidSeq>& boundary_pair)
 {
-  const std::unique_ptr<sql::Connection> conn = this->get_sql_connection().get_conn();
+  auto conn = this->get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection.");
     return OMS_FAILED;
   }
-
+  defer(this->get_sql_connection().release_connection(conn));
   return InstanceGtidSeqDAO::get_instance_boundary_gtid_seq(conn, instance, boundary_pair);
 }
 
@@ -875,7 +910,7 @@ int MetaDBProtocol::query_sys_user(User& user)
   return execute_at_most_one_query(get_sql_connection(), query_sql, user, user_rs_converter);
 }
 
-int NodeDAO::query_all_nodes(const unique_ptr<sql::Connection>& conn, vector<Node*>& nodes)
+int NodeDAO::query_all_nodes(sql::Connection* conn, vector<Node*>& nodes)
 {
   try {
     std::unique_ptr<sql::Statement> statement(conn->createStatement());
@@ -894,7 +929,7 @@ int NodeDAO::query_all_nodes(const unique_ptr<sql::Connection>& conn, vector<Nod
   return OMS_OK;
 }
 
-int NodeDAO::query_nodes(const unique_ptr<sql::Connection>& conn, std::vector<Node*>& nodes, const Node& node)
+int NodeDAO::query_nodes(sql::Connection* conn, std::vector<Node*>& nodes, const Node& node)
 {
   try {
     std::string sql = "SELECT * FROM nodes";
@@ -917,7 +952,7 @@ int NodeDAO::query_nodes(const unique_ptr<sql::Connection>& conn, std::vector<No
   return OMS_OK;
 }
 
-int NodeDAO::query_metric(const unique_ptr<sql::Connection>& conn, SysMetric& metric, const Node& node)
+int NodeDAO::query_metric(sql::Connection* conn, SysMetric& metric, const Node& node)
 {
   try {
     std::shared_ptr<sql::PreparedStatement> statement(
@@ -940,7 +975,7 @@ int NodeDAO::query_metric(const unique_ptr<sql::Connection>& conn, SysMetric& me
   return OMS_OK;
 }
 
-int NodeDAO::insert(const unique_ptr<sql::Connection>& conn, const Node& node)
+int NodeDAO::insert(sql::Connection* conn, const Node& node)
 {
   try {
     std::string sql = add_node_sql(node);
@@ -956,7 +991,7 @@ int NodeDAO::insert(const unique_ptr<sql::Connection>& conn, const Node& node)
   return OMS_OK;
 }
 
-int NodeDAO::update_node(const std::unique_ptr<sql::Connection>& conn, const Node& node, const Node& condition)
+int NodeDAO::update_node(sql::Connection* conn, const Node& node, const Node& condition)
 {
   try {
     std::string sql = "UPDATE nodes SET ";
@@ -1071,7 +1106,7 @@ void NodeDAO::nodes_set_clause(const Node& node, string& sql)
   }
 }
 
-int NodeDAO::delete_nodes(const unique_ptr<sql::Connection>& conn, const Node& node)
+int NodeDAO::delete_nodes(sql::Connection* conn, const Node& node)
 {
   try {
     std::string sql = "DELETE FROM nodes ";
@@ -1244,8 +1279,7 @@ string NodeDAO::nodes_where_clause_sql(const Node& node)
   return where_clause;
 }
 
-int NodeDAO::query_nodes(
-    const unique_ptr<sql::Connection>& conn, vector<Node*>& nodes, const set<State>& state_conditions)
+int NodeDAO::query_nodes(sql::Connection* conn, vector<Node*>& nodes, const set<State>& state_conditions)
 {
   try {
     std::string sql = "SELECT * FROM nodes";
@@ -1411,7 +1445,7 @@ std::string NodeDAO::add_node_sql(const Node& node)
   return sql;
 }
 
-int NodeDAO::update_node(const unique_ptr<sql::Connection>& conn, const Node& node)
+int NodeDAO::update_node(sql::Connection* conn, const Node& node)
 {
   try {
     std::string sql = "UPDATE nodes SET ";
@@ -1435,7 +1469,7 @@ int NodeDAO::update_node(const unique_ptr<sql::Connection>& conn, const Node& no
   return OMS_OK;
 }
 
-int NodeDAO::query_node(const std::unique_ptr<sql::Connection>& conn, Node& node)
+int NodeDAO::query_node(sql::Connection* conn, Node& node)
 {
   try {
     std::string sql = "SELECT * FROM nodes";
@@ -1486,8 +1520,7 @@ void NodeDAO::convert_to_node(const sql::ResultSet* res, Node& node)
   node.set_node_config(node_config);
 }
 
-int NodeDAO::query_nodes(
-    const unique_ptr<sql::Connection>& conn, set<std::string>& node_ids, map<std::string, Node>& nodes)
+int NodeDAO::query_nodes(sql::Connection* conn, set<std::string>& node_ids, map<std::string, Node>& nodes)
 {
   std::string node_ids_str;
   for (const auto& id : node_ids) {
@@ -1508,8 +1541,7 @@ int NodeDAO::query_nodes(
   return OMS_OK;
 }
 
-int BinlogInstanceDAO::query_all_instances(
-    const unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& binlog_instances)
+int BinlogInstanceDAO::query_all_instances(sql::Connection* conn, vector<BinlogEntry*>& binlog_instances)
 {
   try {
     std::unique_ptr<sql::Statement> statement(conn->createStatement());
@@ -1529,7 +1561,7 @@ int BinlogInstanceDAO::query_all_instances(
 }
 
 int BinlogInstanceDAO::query_tenant_surviving_instances(
-    const unique_ptr<sql::Connection>& conn, string& cluster, string& tenant, std::vector<BinlogEntry>& instances)
+    sql::Connection* conn, string& cluster, string& tenant, std::vector<BinlogEntry>& instances)
 {
   std::string sql = "SELECT * FROM binlog_instances WHERE cluster='" + cluster + "' AND tenant='" + tenant +
                     "' AND state != " + std::to_string(InstanceState::DROP) +
@@ -1538,7 +1570,7 @@ int BinlogInstanceDAO::query_tenant_surviving_instances(
 }
 
 int BinlogInstanceDAO::query_instance_by_entry(
-    const unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& binlog_instances, const BinlogEntry& condition)
+    sql::Connection* conn, vector<BinlogEntry*>& binlog_instances, const BinlogEntry& condition)
 {
   try {
     std::string sql = "SELECT * FROM binlog_instances";
@@ -1568,7 +1600,7 @@ int BinlogInstanceDAO::query_instance_by_entry(
 }
 
 int BinlogInstanceDAO::downtime_instance_query(
-    const unique_ptr<sql::Connection>& conn, std::vector<BinlogEntry>& binlog_instances, std::string node_id)
+    sql::Connection* conn, std::vector<BinlogEntry>& binlog_instances, std::string node_id)
 {
   std::string sql = "SELECT * FROM binlog_instances WHERE node_id='" + node_id + "' AND state IN ( " +
                     std::to_string(InstanceState::OFFLINE) + " ," + std::to_string(InstanceState::FAILED) + ")";
@@ -1674,7 +1706,7 @@ void BinlogInstanceDAO::instance_where_clause_sql(const BinlogEntry& condition, 
   }
 }
 
-int BinlogInstanceDAO::add_instances(const unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& binlog_instances)
+int BinlogInstanceDAO::add_instances(sql::Connection* conn, vector<BinlogEntry*>& binlog_instances)
 {
   for (auto binlog_instance : binlog_instances) {
     if (add_instance(conn, *binlog_instance) != OMS_OK) {
@@ -1684,7 +1716,7 @@ int BinlogInstanceDAO::add_instances(const unique_ptr<sql::Connection>& conn, ve
   return OMS_OK;
 }
 
-int BinlogInstanceDAO::add_instance(const unique_ptr<sql::Connection>& conn, const BinlogEntry& binlog_instance)
+int BinlogInstanceDAO::add_instance(sql::Connection* conn, const BinlogEntry& binlog_instance)
 {
   try {
     string sql = splice_add_instance_sql(binlog_instance);
@@ -1899,8 +1931,7 @@ string BinlogInstanceDAO::splice_add_instance_sql(const BinlogEntry& binlog_inst
   return sql;
 }
 
-int BinlogInstanceDAO::update_instance_state(
-    const unique_ptr<sql::Connection>& conn, const string& instance_name, InstanceState state)
+int BinlogInstanceDAO::update_instance_state(sql::Connection* conn, const string& instance_name, InstanceState state)
 {
   std::string sql =
       "UPDATE binlog_instances SET state = " + std::to_string(state) + " WHERE instance_name = '" + instance_name + "'";
@@ -1909,7 +1940,7 @@ int BinlogInstanceDAO::update_instance_state(
 }
 
 int BinlogInstanceDAO::update_instance(
-    const unique_ptr<sql::Connection>& conn, const BinlogEntry& binlog_instance, const BinlogEntry& condition)
+    sql::Connection* conn, const BinlogEntry& binlog_instance, const BinlogEntry& condition)
 {
   try {
     string sql = splice_update_instance_sql(binlog_instance, condition);
@@ -1918,13 +1949,7 @@ int BinlogInstanceDAO::update_instance(
     int count = 1;
     assign_instance(binlog_instance, stmt, count, false, true);
     assign_instance(condition, stmt, count, true);
-    auto ret = stmt->executeUpdate();
-    if (ret == 0) {
-      OMS_ERROR("Failed to update instance: {},condition:{},the number of affected rows is 0",
-          binlog_instance.serialize_to_json(),
-          condition.serialize_to_json());
-      return OMS_FAILED;
-    }
+    stmt->executeUpdate();
   } catch (sql::SQLException& e) {
     OMS_ERROR("Failed to update instance: {},condition:{},reason:{}",
         binlog_instance.serialize_to_json(),
@@ -2079,13 +2104,13 @@ string BinlogInstanceDAO::splice_update_instance_sql(const BinlogEntry& binlog_i
   return sql;
 }
 
-int BinlogInstanceDAO::delete_instances(const unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& binlog_instances)
+int BinlogInstanceDAO::delete_instances(sql::Connection* conn, vector<BinlogEntry*>& binlog_instances)
 {
   return 0;
 }
 
 int BinlogInstanceDAO::query_instances(
-    const unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& instances, const set<std::string>& instance_names)
+    sql::Connection* conn, vector<BinlogEntry*>& instances, const set<std::string>& instance_names)
 {
   try {
     std::string sql = "SELECT * FROM binlog_instances";
@@ -2133,7 +2158,7 @@ int BinlogInstanceDAO::query_instances(
 }
 
 int BinlogInstanceDAO::query_instances(
-    const unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& instances, const set<InstanceState>& instance_states)
+    sql::Connection* conn, vector<BinlogEntry*>& instances, const set<InstanceState>& instance_states)
 {
   try {
     std::string sql = "SELECT * FROM binlog_instances";
@@ -2180,8 +2205,7 @@ int BinlogInstanceDAO::query_instances(
   return OMS_OK;
 }
 
-int BinlogInstanceDAO::query_instance(
-    const unique_ptr<sql::Connection>& conn, BinlogEntry& instance, const string& instance_name)
+int BinlogInstanceDAO::query_instance(sql::Connection* conn, BinlogEntry& instance, const string& instance_name)
 {
   try {
     std::string sql = "SELECT * FROM binlog_instances WHERE instance_name = ? LIMIT 1";
@@ -2227,8 +2251,7 @@ void BinlogInstanceDAO::convert_to_instance(const sql::ResultSet* res, BinlogEnt
   instance.set_tenant_id(instance_config->tenant_id());
 }
 
-int BinlogInstanceDAO::query_instances_by_node(
-    const unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& instances, const Node& node)
+int BinlogInstanceDAO::query_instances_by_node(sql::Connection* conn, vector<BinlogEntry*>& instances, const Node& node)
 {
   try {
     std::string sql =
@@ -2349,7 +2372,7 @@ int BinlogInstanceDAO::query_instances_by_node(
 }
 
 int BinlogInstanceDAO::update_instance(
-    const unique_ptr<sql::Connection>& conn, const BinlogEntry& binlog_instance, const string& instance_name)
+    sql::Connection* conn, const BinlogEntry& binlog_instance, const string& instance_name)
 {
   BinlogEntry condition;
   condition.set_instance_name(instance_name);
@@ -2357,7 +2380,7 @@ int BinlogInstanceDAO::update_instance(
 }
 
 int BinlogInstanceDAO::query_instance_by_row_lock(
-    const unique_ptr<sql::Connection>& conn, vector<BinlogEntry*>& binlog_instances, const BinlogEntry& condition)
+    sql::Connection* conn, vector<BinlogEntry*>& binlog_instances, const BinlogEntry& condition)
 {
   try {
     std::string sql = "SELECT * FROM binlog_instances";
@@ -2387,7 +2410,7 @@ int BinlogInstanceDAO::query_instance_by_row_lock(
   return OMS_OK;
 }
 
-int TaskDAO::query_all_tasks(const unique_ptr<sql::Connection>& conn, vector<Task*>& tasks)
+int TaskDAO::query_all_tasks(sql::Connection* conn, vector<Task*>& tasks)
 {
   try {
     string sql = "SELECT * FROM tasks";
@@ -2409,7 +2432,7 @@ int TaskDAO::query_all_tasks(const unique_ptr<sql::Connection>& conn, vector<Tas
   return OMS_OK;
 }
 
-int TaskDAO::query_tasks_by_entry(const unique_ptr<sql::Connection>& conn, vector<Task*>& tasks, const Task& condition)
+int TaskDAO::query_tasks_by_entry(sql::Connection* conn, vector<Task*>& tasks, const Task& condition)
 {
   try {
     std::string sql = "SELECT * FROM tasks ";
@@ -2437,7 +2460,7 @@ int TaskDAO::query_tasks_by_entry(const unique_ptr<sql::Connection>& conn, vecto
   return OMS_OK;
 }
 
-int TaskDAO::add_tasks(const unique_ptr<sql::Connection>& conn, const vector<Task>& tasks)
+int TaskDAO::add_tasks(sql::Connection* conn, const vector<Task>& tasks)
 {
   for (auto task : tasks) {
     if (add_task(conn, task) != OMS_OK) {
@@ -2447,7 +2470,7 @@ int TaskDAO::add_tasks(const unique_ptr<sql::Connection>& conn, const vector<Tas
   return OMS_OK;
 }
 
-int TaskDAO::add_task(const std::unique_ptr<sql::Connection>& conn, Task& task)
+int TaskDAO::add_task(sql::Connection* conn, Task& task)
 {
   try {
     if (task.task_id().empty()) {
@@ -2614,7 +2637,7 @@ string TaskDAO::add_task_sql(const Task& task)
   return sql;
 }
 
-int TaskDAO::update_task(const std::unique_ptr<sql::Connection>& conn, Task& task, const Task& condition)
+int TaskDAO::update_task(sql::Connection* conn, Task& task, const Task& condition)
 {
   try {
     if (task.last_modify() == 0) {
@@ -2707,7 +2730,7 @@ string TaskDAO::update_task_sql(const Task& task, const Task& condition)
   return sql;
 }
 
-int TaskDAO::delete_task(const unique_ptr<sql::Connection>& conn, const Task& task)
+int TaskDAO::delete_task(sql::Connection* conn, const Task& task)
 {
   try {
     std::string sql = "DELETE FROM tasks ";
@@ -2793,12 +2816,12 @@ void TaskDAO::task_where(const Task& task, string& sql)
   }
 }
 
-int TaskDAO::delete_tasks(const unique_ptr<sql::Connection>& conn, vector<Task>& tasks)
+int TaskDAO::delete_tasks(sql::Connection* conn, vector<Task>& tasks)
 {
   return 0;
 }
 
-int TaskDAO::query_task_by_entry(const unique_ptr<sql::Connection>& conn, Task& task, const Task& condition)
+int TaskDAO::query_task_by_entry(sql::Connection* conn, Task& task, const Task& condition)
 {
   try {
     std::string sql = "SELECT * FROM tasks ";
@@ -2873,8 +2896,7 @@ void TaskDAO::convert_to_task(const sql::ResultSet* res, Task& task)
   }
 }
 
-int ConfigTemplateDAO::query_config_item(
-    const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config, const ConfigTemplate& condition)
+int ConfigTemplateDAO::query_config_item(sql::Connection* conn, ConfigTemplate& config, const ConfigTemplate& condition)
 {
   try {
     std::string sql = "SELECT * FROM config_template ";
@@ -2901,8 +2923,8 @@ int ConfigTemplateDAO::query_config_item(
   return OMS_OK;
 }
 
-int ConfigTemplateDAO::query_config_items(const std::unique_ptr<sql::Connection>& conn,
-    std::vector<ConfigTemplate*>& configs, const ConfigTemplate& condition)
+int ConfigTemplateDAO::query_config_items(
+    sql::Connection* conn, std::vector<ConfigTemplate*>& configs, const ConfigTemplate& condition)
 {
   try {
     std::string sql = "SELECT * FROM config_template ";
@@ -2930,8 +2952,8 @@ int ConfigTemplateDAO::query_config_items(const std::unique_ptr<sql::Connection>
   return OMS_OK;
 }
 
-int ConfigTemplateDAO::query_config_items(const std::unique_ptr<sql::Connection>& conn,
-    std::map<std::string, std::string>& configs, const ConfigTemplate& condition)
+int ConfigTemplateDAO::query_config_items(
+    sql::Connection* conn, std::map<std::string, std::string>& configs, const ConfigTemplate& condition)
 {
   try {
     std::string sql = "SELECT * FROM config_template ";
@@ -2958,7 +2980,7 @@ int ConfigTemplateDAO::query_config_items(const std::unique_ptr<sql::Connection>
 }
 
 int ConfigTemplateDAO::update_config_item(
-    const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config, const ConfigTemplate& condition)
+    sql::Connection* conn, ConfigTemplate& config, const ConfigTemplate& condition)
 {
   try {
     string sql = update_config_item_sql(config, condition);
@@ -2975,8 +2997,7 @@ int ConfigTemplateDAO::update_config_item(
   return OMS_OK;
 }
 
-int ConfigTemplateDAO::add_config_item(
-    const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config, const ConfigTemplate& condition)
+int ConfigTemplateDAO::add_config_item(sql::Connection* conn, ConfigTemplate& config, const ConfigTemplate& condition)
 {
   try {
     string sql = add_config_item_sql(config);
@@ -3234,7 +3255,7 @@ void ConfigTemplateDAO::convert_to_config_item(const sql::ResultSet* res, Config
   config.set_scope(res->getString("scope").c_str());
 }
 
-int ConfigTemplateDAO::replace_into_config_item(const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config)
+int ConfigTemplateDAO::replace_into_config_item(sql::Connection* conn, ConfigTemplate& config)
 {
   try {
     string sql = replace_into_config_item_sql(config);
@@ -3320,7 +3341,7 @@ string ConfigTemplateDAO::replace_into_config_item_sql(const ConfigTemplate& con
   return sql;
 }
 
-int ConfigTemplateDAO::delete_config_item(const std::unique_ptr<sql::Connection>& conn, ConfigTemplate& config)
+int ConfigTemplateDAO::delete_config_item(sql::Connection* conn, ConfigTemplate& config)
 {
   try {
     std::string sql = "DELETE FROM config_template ";
@@ -3341,7 +3362,7 @@ int ConfigTemplateDAO::delete_config_item(const std::unique_ptr<sql::Connection>
   return OMS_OK;
 }
 
-int update_instance_gtid_seq(const std::unique_ptr<sql::Connection>& conn, const BinlogEntry& instance,
+int update_instance_gtid_seq(sql::Connection* conn, const BinlogEntry& instance,
     const std::pair<InstanceGtidSeq, InstanceGtidSeq>& boundary_gtid_seq, const uint64_t last_purged_gtid,
     const std::string& incr_gtid_seq_str, uint64_t last_purged_checkpoint)
 {
@@ -3552,26 +3573,19 @@ void MetricTask::binlog_instance_exploration(ClusterConfig* cluster_config,
 {
   BinlogEntry binlog_instance(instance);
   MySQLConnection connection;
-  int ret = connection.connect(cluster_config->database_ip(),
+  auto conn = connection.get_conn(cluster_config->database_ip(),
       cluster_config->database_port(),
       cluster_config->user(),
       cluster_config->password(),
       cluster_config->database_name());
-  if (ret != OMS_OK) {
-    OMS_ERROR("Failed to initialize metabase connection,ip:{},port:{},user:{},database:{}",
-        cluster_config->database_ip(),
-        cluster_config->database_port(),
-        cluster_config->password(),
-        cluster_config->database_name());
-    return;
-  }
-  const std::unique_ptr<sql::Connection> conn = connection.get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get the connection");
     return;
   }
+  defer(conn->close());
   std::pair<InstanceGtidSeq, InstanceGtidSeq> boundary_gtid_seq;
-  if (OMS_OK != InstanceGtidSeqDAO::get_instance_boundary_gtid_seq(conn, instance.instance_name(), boundary_gtid_seq)) {
+  if (OMS_OK !=
+      InstanceGtidSeqDAO::get_instance_boundary_gtid_seq(conn.get(), instance.instance_name(), boundary_gtid_seq)) {
     OMS_ERROR("Failed to obtain boundary gtid seq of instance: {}, error: {}", instance.instance_name());
     return;
   };
@@ -3582,7 +3596,7 @@ void MetricTask::binlog_instance_exploration(ClusterConfig* cluster_config,
    * When the client is successfully initialized, the probing operation is performed. If the client initializes
    * abnormally, it is directly considered that the probing failed.
    */
-  ret = client.init(instance);
+  int ret = client.init(instance);
   if (OMS_OK == ret) {
     ret = client.report(rs, boundary_gtid_seq.second.commit_version_start());
   }
@@ -3602,9 +3616,12 @@ void MetricTask::binlog_instance_exploration(ClusterConfig* cluster_config,
       if (row.fields().size() > 9) {
         last_purged_checkpoint = std::atoll(row.fields()[9].c_str());
       }
-      if (OMS_OK !=
-          update_instance_gtid_seq(
-              conn, binlog_instance, boundary_gtid_seq, last_purged_gtid, incr_gtid_seq_str, last_purged_checkpoint)) {
+      if (OMS_OK != update_instance_gtid_seq(conn.get(),
+                        binlog_instance,
+                        boundary_gtid_seq,
+                        last_purged_gtid,
+                        incr_gtid_seq_str,
+                        last_purged_checkpoint)) {
         OMS_ERROR("Failed to update instance gtid seq of instance [{}], incr gtid seq: {}, last purged gtid: {}",
             instance.instance_name(),
             incr_gtid_seq_str,
@@ -3620,7 +3637,7 @@ void MetricTask::binlog_instance_exploration(ClusterConfig* cluster_config,
         binlog_instance.set_state(binlog::InstanceState::RUNNING);
       }
 
-      ret = BinlogInstanceDAO::update_instance(conn, binlog_instance, instance);
+      ret = BinlogInstanceDAO::update_instance(conn.get(), binlog_instance, instance);
       if (ret != OMS_OK) {
         OMS_ERROR("Failed to report binlog instance information:{}", instance.instance_name());
         return;
@@ -3639,12 +3656,12 @@ void MetricTask::binlog_instance_exploration(ClusterConfig* cluster_config,
             instance.instance_name(),
             instance.pid());
         binlog_instance.set_heartbeat(Timer::now_s());
-        if (BinlogInstanceDAO::update_instance(conn, binlog_instance, instance) != OMS_OK) {
+        if (BinlogInstanceDAO::update_instance(conn.get(), binlog_instance, instance) != OMS_OK) {
           OMS_ERROR("Failed to report binlog instance: {}", instance.instance_name());
         }
       } else {
         binlog_instance.set_state(InstanceState::OFFLINE);
-        if (BinlogInstanceDAO::update_instance(conn, binlog_instance, instance) != OMS_OK) {
+        if (BinlogInstanceDAO::update_instance(conn.get(), binlog_instance, instance) != OMS_OK) {
           OMS_ERROR("Failed to report binlog instance: {}", instance.instance_name());
           return;
         }
@@ -3664,15 +3681,24 @@ void MetricTask::binlog_instance_exploration(ClusterConfig* cluster_config,
   mark_dump_metric(instance, client, rs);
 }
 
-void MetricTask::mark_binlog_instance_down(string node_id)
+int MetricTask::fetch_downtime_instances(string node_id, std::vector<BinlogEntry>& binlog_instances)
 {
-  const std::unique_ptr<sql::Connection> conn = _node.get_sql_connection().get_conn();
+  auto conn = _node.get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get connection");
+    return true;
+  }
+  defer(_node.get_sql_connection().release_connection(conn));
+  BinlogInstanceDAO::downtime_instance_query(conn, binlog_instances, node_id);
+  return false;
+}
+
+void MetricTask::mark_binlog_instance_down(string node_id)
+{
+  std::vector<BinlogEntry> binlog_instances;
+  if (fetch_downtime_instances(node_id, binlog_instances) != OMS_OK) {
     return;
   }
-  std::vector<BinlogEntry> binlog_instances;
-  BinlogInstanceDAO::downtime_instance_query(conn, binlog_instances, node_id);
   for (auto instance : binlog_instances) {
     PrometheusExposer::mark_binlog_counter_metric(instance.node_id(),
         instance.instance_name(),
@@ -3683,22 +3709,18 @@ void MetricTask::mark_binlog_instance_down(string node_id)
         BINLOG_INSTANCE_DOWN_TYPE);
   }
 }
-bool MetricTask::binlog_instances_exploration_task()
+int MetricTask::binlog_instances_exploration_task()
 {
   /*!
    * @brief The first step is to conduct OBI exploration,And update the heartbeat and status of OBI
    */
-  BinlogEntry condition;
-  condition.set_node_id(_node.get_node_info().id());
-  condition.set_state(InstanceState::RUNNING);
   std::vector<BinlogEntry*> binlog_instances;
   defer(logproxy::release_vector(binlog_instances));
-  const std::unique_ptr<sql::Connection> conn = _node.get_sql_connection().get_conn();
-  if (conn == nullptr) {
-    OMS_ERROR("Failed to get connection");
-    return true;
+
+  if (query_surviving_instances(_node.get_node_info().id(), binlog_instances) != OMS_OK) {
+    OMS_ERROR("Failed to query the surviving instances of the current node: {}", _node.get_node_info().id());
+    return OMS_FAILED;
   }
-  BinlogInstanceDAO::query_instance_by_entry(conn, binlog_instances, condition);
 
   for (auto* instance : binlog_instances) {
     mark_instance_resource(instance);
@@ -3712,7 +3734,7 @@ bool MetricTask::binlog_instances_exploration_task()
       g_cluster->get_node_info().id(), "", "", "", {}, {}, binlog_instances.size(), BINLOG_INSTANCE_NUM_TYPE);
 
   mark_binlog_instance_down(_node.get_node_info().id());
-  return false;
+  return OMS_OK;
 }
 
 void MetaDBPushPullTask::run()
@@ -3728,7 +3750,7 @@ void MetaDBPushPullTask::run()
 }
 
 int PrimaryInstanceDAO::query_primary_instance(
-    const std::unique_ptr<sql::Connection>& conn, PrimaryInstance& primary, const PrimaryInstance& condition)
+    sql::Connection* conn, PrimaryInstance& primary, const PrimaryInstance& condition)
 {
   try {
     std::string sql = "SELECT * FROM primary_instance ";
@@ -3755,8 +3777,7 @@ int PrimaryInstanceDAO::query_primary_instance(
   return OMS_OK;
 }
 
-int PrimaryInstanceDAO::add_primary_instance(
-    const std::unique_ptr<sql::Connection>& conn, const PrimaryInstance& primary)
+int PrimaryInstanceDAO::add_primary_instance(sql::Connection* conn, const PrimaryInstance& primary)
 {
   try {
     string sql = add_primary_instance_sql(primary);
@@ -3772,7 +3793,7 @@ int PrimaryInstanceDAO::add_primary_instance(
 }
 
 int PrimaryInstanceDAO::update_primary_instance(
-    const std::unique_ptr<sql::Connection>& conn, const PrimaryInstance& primary, const PrimaryInstance& condition)
+    sql::Connection* conn, const PrimaryInstance& primary, const PrimaryInstance& condition)
 {
   try {
     string sql = update_primary_instance_sql(primary, condition);
@@ -3935,8 +3956,8 @@ void PrimaryInstanceDAO::convert_to_primary_instance(const sql::ResultSet* res, 
   primary.set_master_instance(res->getString("master_instance").c_str());
 }
 
-int InstanceGtidSeqDAO::get_instance_boundary_gtid_seq(const std::unique_ptr<sql::Connection>& conn,
-    const std::string& instance_name, std::pair<InstanceGtidSeq, InstanceGtidSeq>& boundary_gtid_seq)
+int InstanceGtidSeqDAO::get_instance_boundary_gtid_seq(sql::Connection* conn, const std::string& instance_name,
+    std::pair<InstanceGtidSeq, InstanceGtidSeq>& boundary_gtid_seq)
 {
   // "commit_version_start" remains in increasing order
   std::string first_gtid_query_sql = "SELECT * FROM instances_gtid_seq WHERE instance = \"" + instance_name +
@@ -3960,8 +3981,7 @@ int InstanceGtidSeqDAO::get_instance_boundary_gtid_seq(const std::unique_ptr<sql
   return OMS_OK;
 }
 
-int InstanceGtidSeqDAO::add_gtid_seq_batch(
-    const std::unique_ptr<sql::Connection>& conn, const std::vector<InstanceGtidSeq>& gtid_seq_vec)
+int InstanceGtidSeqDAO::add_gtid_seq_batch(sql::Connection* conn, const std::vector<InstanceGtidSeq>& gtid_seq_vec)
 {
   if (gtid_seq_vec.empty()) {
     // todo split vec
@@ -3986,7 +4006,7 @@ int InstanceGtidSeqDAO::add_gtid_seq_batch(
 }
 
 int InstanceGtidSeqDAO::remove_instance_gtid_seq_before_gtid(
-    const std::unique_ptr<sql::Connection>& conn, const std::string& instance_name, uint64_t gtid)
+    sql::Connection* conn, const std::string& instance_name, uint64_t gtid)
 {
   std::string remove_gtid_seq_sql = "DELETE FROM instances_gtid_seq WHERE instance = \"" + instance_name +
                                     "\" AND gtid_start <= " + std::to_string(gtid) + " LIMIT " +
@@ -4004,7 +4024,7 @@ int InstanceGtidSeqDAO::remove_instance_gtid_seq_before_gtid(
 }
 
 int InstanceGtidSeqDAO::remove_instance_gtid_seq_before_checkpoint(
-    const unique_ptr<sql::Connection>& conn, const string& instance_name, uint64_t checkpoint)
+    sql::Connection* conn, const string& instance_name, uint64_t checkpoint)
 {
   std::string remove_gtid_seq_sql = "DELETE FROM instances_gtid_seq WHERE instance = \"" + instance_name +
                                     "\" AND commit_version_start < " + std::to_string(checkpoint) +
@@ -4047,34 +4067,48 @@ void MetaDBPushPullTask::node_exploration()
   node_probe();
 }
 
+int MetricTask::query_surviving_instances(const std::string& node_id, vector<BinlogEntry*>& binlog_instances)
+{
+  BinlogEntry condition;
+  condition.set_node_id(node_id);
+  condition.set_state(InstanceState::RUNNING);
+  auto conn = _node.get_sql_connection().get_conn(true);
+  if (conn == nullptr) {
+    OMS_ERROR("Failed to get the connection");
+    return OMS_FAILED;
+  }
+  defer(_node.get_sql_connection().release_connection(conn));
+  int ret = BinlogInstanceDAO::query_instance_by_entry(conn, binlog_instances, condition);
+  if (ret != OMS_OK) {
+    OMS_ERROR("Failed to query node information [node_id: {},node_ip: {},node_port: {}] from cluster",
+        _node.get_node_info().id(),
+        _node.get_node_info().ip(),
+        _node.get_node_info().port());
+    return OMS_FAILED;
+  }
+  return OMS_OK;
+}
+
 int MetricTask::remote_non_live_node_instance_probe()
 {
   vector<Node*> nodes;
   defer(release_vector(nodes));
   set<State> states{OFFLINE};
-  const std::unique_ptr<sql::Connection> conn = _node.get_sql_connection().get_conn();
-  if (conn == nullptr) {
-    OMS_ERROR("Failed to get the connection");
+
+  if (query_nodes_by_state(nodes, states) != OMS_OK) {
+    OMS_ERROR("Failed to query nodes by state");
     return OMS_FAILED;
   }
-  NodeDAO::query_nodes(conn, nodes, states);
+
   for (const auto* node : nodes) {
-    BinlogEntry condition;
-    OMS_INFO("The current node [{}] is not alive, and all OBIs under the current node are explored remotely",
-        node->identifier());
-    condition.set_node_id(node->id());
-    condition.set_state(InstanceState::RUNNING);
     vector<BinlogEntry*> binlog_instances;
     defer(release_vector(binlog_instances));
-    int ret = BinlogInstanceDAO::query_instance_by_entry(conn, binlog_instances, condition);
-    if (ret != OMS_OK) {
-      OMS_ERROR("Failed to query node information [node_id: {},node_ip: {},node_port: {}] from cluster",
-          _node.get_node_info().id(),
-          _node.get_node_info().ip(),
-          _node.get_node_info().port());
-      return OMS_FAILED;
+    OMS_INFO("The current node [{}] is not alive, and all OBIs under the current node are explored remotely",
+        node->identifier());
+    if (query_surviving_instances(node->id(), binlog_instances) != OMS_OK) {
+      OMS_ERROR("Failed to obtain surviving instances on offline node:{}", node->identifier());
+      continue;
     }
-
     for (const auto* instance : binlog_instances) {
       if (instance->state() == InstanceState::RUNNING) {
         _node.get_thread_executor().submit(binlog_instance_exploration,
@@ -4102,6 +4136,17 @@ void MetricTask::run()
     remote_non_live_node_instance_probe();
     _timer.sleep(this->_interval_us);
   }
+}
+
+int MetricTask::query_nodes_by_state(vector<Node*>& nodes, set<State>& states)
+{
+  auto conn = _node.get_sql_connection().get_conn();
+  if (conn == nullptr) {
+    OMS_ERROR("Failed to get the connection");
+    return OMS_FAILED;
+  }
+  defer(_node.get_sql_connection().release_connection(conn));
+  return NodeDAO::query_nodes(conn, nodes, states);
 }
 
 void MetricTask::mark_instance_resource(const BinlogEntry* instance)
@@ -4218,54 +4263,120 @@ void MetricTask::mark_instance_resource(const BinlogEntry* instance)
   }
 }
 
+int MetaDBPushPullTask::query_nodes_by_state(vector<Node*>& nodes, set<State>& states)
+{
+  auto conn = _node.get_sql_connection().get_conn();
+  if (conn == nullptr) {
+    OMS_ERROR("Failed to get the connection");
+    return OMS_FAILED;
+  }
+  defer(_node.get_sql_connection().release_connection(conn));
+  return NodeDAO::query_nodes(conn, nodes, states);
+}
+
+int MetaDBPushPullTask::offline_node(Node& node)
+{
+  auto conn = _node.get_sql_connection().get_conn();
+  if (conn == nullptr) {
+    OMS_ERROR("Failed to get the connection");
+    return OMS_FAILED;
+  }
+  defer(_node.get_sql_connection().release_connection(conn));
+  node.set_state(OFFLINE);
+  node.set_last_modify(Timer::now_s());
+  int ret = NodeDAO::update_node(conn, node);
+  if (ret != OMS_OK) {
+    OMS_ERROR("Failed to update node information [node_id: {},node_ip: {},node_port: {}] to cluster",
+        _node.get_node_info().id(),
+        _node.get_node_info().ip(),
+        _node.get_node_info().port());
+    return OMS_FAILED;
+  }
+  PrometheusExposer::mark_binlog_counter_metric(node.ip(), "", "", "", {}, {}, BINLOG_MANAGER_DOWN_COUNT_TYPE);
+  OMS_INFO("Node [{}] has not reported for a long time, and is updated to offline", node.id());
+  return OMS_OK;
+}
 int MetaDBPushPullTask::node_probe()
 {
   vector<Node*> nodes;
   defer(release_vector(nodes));
   set<State> states{ONLINE, SUSPECT};
-  const std::unique_ptr<sql::Connection> conn = _node.get_sql_connection().get_conn();
-  if (conn == nullptr) {
-    OMS_ERROR("Failed to get the connection");
+  if (query_nodes_by_state(nodes, states) != OMS_OK) {
+    OMS_ERROR("Failed to query nodes by state");
     return OMS_FAILED;
   }
-  NodeDAO::query_nodes(conn, nodes, states);
 
-  for (auto* node : nodes) {
-    if (strcmp(node->id().c_str(), _node.get_node_info().id().c_str()) != 0 &&
-        (Timer::now_s() - node->last_modify()) > node->node_config()->expiration()) {
-      node->set_state(OFFLINE);
-      node->set_last_modify(Timer::now_s());
-      int ret = NodeDAO::update_node(conn, *node);
-      if (ret != OMS_OK) {
-        OMS_ERROR("Failed to update node information [node_id: {},node_ip: {},node_port: {}] to cluster",
-            _node.get_node_info().id(),
-            _node.get_node_info().ip(),
-            _node.get_node_info().port());
-        return OMS_FAILED;
+  for (const auto* node : nodes) {
+    Node newest_node;
+    newest_node.set_id(node->id());
+    if (query_node(newest_node) != OMS_OK) {
+      OMS_ERROR("Failed to get the latest status of the node:{}", newest_node.identifier());
+      continue;
+    }
+    if (strcmp(newest_node.id().c_str(), _node.get_node_info().id().c_str()) != 0 &&
+        (Timer::now_s() - newest_node.last_modify()) > newest_node.node_config()->expiration()) {
+      if (offline_node(newest_node) != OMS_OK) {
+        OMS_ERROR("Offline node failed, node_id: {}", newest_node.identifier());
+        continue;
       }
-      PrometheusExposer::mark_binlog_counter_metric(node->ip(), "", "", "", {}, {}, BINLOG_MANAGER_DOWN_COUNT_TYPE);
-      OMS_INFO("Node [{}] has not reported for a long time, and is updated to offline", node->identifier());
     }
   }
 
   return OMS_OK;
 }
 
-int MetaDBPushPullTask::node_report()
+int MetaDBPushPullTask::query_node(Node& node)
 {
-  Node node;
-  node.set_id(_node.get_node_info().id());
-  const std::unique_ptr<sql::Connection> conn = _node.get_sql_connection().get_conn();
+  auto conn = _node.get_sql_connection().get_conn();
   if (conn == nullptr) {
     OMS_ERROR("Failed to get the connection");
     return OMS_FAILED;
   }
-  int ret = NodeDAO::query_node(conn, node);
+  defer(_node.get_sql_connection().release_connection(conn));
+  return NodeDAO::query_node(conn, node);
+}
+
+int MetaDBPushPullTask::register_node()
+{
+  auto conn = _node.get_sql_connection().get_conn();
+  if (conn == nullptr) {
+    OMS_ERROR("Failed to get the connection");
+    return OMS_FAILED;
+  }
+  defer(_node.get_sql_connection().release_connection(conn));
+  return NodeDAO::insert(conn, _node.get_node_info());
+}
+int MetaDBPushPullTask::node_report(Node node)
+{
+  uint32_t node_state = UNDEFINED;
+  if (node.state() != GRAYSCALE && node.state() != PAUSED) {
+    node_state = ONLINE;
+  }
+  node.set_last_modify(Timer::now_s());
+  node.set_state(node_state);
+  {
+    std::lock_guard<std::mutex> guard(g_metric_mutex);
+    node.metric()->assign(g_metric);
+  }
+  auto conn = _node.get_sql_connection().get_conn();
+  if (conn == nullptr) {
+    OMS_ERROR("Failed to get the connection");
+    return OMS_FAILED;
+  }
+  defer(_node.get_sql_connection().release_connection(conn));
+  return NodeDAO::update_node(conn, node);
+}
+int MetaDBPushPullTask::node_report()
+{
+  Node node;
+  node.set_id(_node.get_node_info().id());
+  int ret = query_node(node);
   if (ret != OMS_OK) {
     OMS_ERROR("Failed to pull the node information [node_id: {},node_ip: {},node_port: {}] from the cluster",
         _node.get_node_info().id(),
         _node.get_node_info().ip(),
         _node.get_node_info().port());
+
     return OMS_FAILED;
   }
   /*!
@@ -4273,7 +4384,7 @@ int MetaDBPushPullTask::node_report()
    * be newly registered.
    */
   if (node.state() == UNDEFINED) {
-    ret = NodeDAO::insert(conn, _node.get_node_info());
+    ret = register_node();
     if (ret != OMS_OK) {
       OMS_ERROR("Failed to register node [node_id: {},node_ip: {},node_port: {}] to cluster",
           _node.get_node_info().id(),
@@ -4282,17 +4393,7 @@ int MetaDBPushPullTask::node_report()
       return OMS_FAILED;
     }
   } else {
-    uint32_t node_state = UNDEFINED;
-    if (node.state() != GRAYSCALE && node.state() != PAUSED) {
-      node_state = ONLINE;
-    }
-    node.set_last_modify(Timer::now_s());
-    node.set_state(node_state);
-    {
-      std::lock_guard<std::mutex> guard(g_metric_mutex);
-      node.metric()->assign(g_metric);
-    }
-    ret = NodeDAO::update_node(conn, node);
+    ret = node_report(node);
     if (ret != OMS_OK) {
       OMS_ERROR("Failed to update node information [node_id: {},node_ip: {},node_port: {}] to cluster",
           _node.get_node_info().id(),

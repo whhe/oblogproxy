@@ -20,7 +20,7 @@ TEST(TaskDAO, add_task)
 {
   MySQLConnection connection;
   // TODO 要注释掉连接信息,测试中先在单测中保留
-  int ret = connection.connect("11.124.9.19", 10011, "logproxy@mysql#ob4x.admin", "123456", "binlog_cluster");
+  int ret = connection.init("11.124.9.19", 10011, "logproxy@mysql#ob4x.admin", "123456", "binlog_cluster");
   if (ret != OMS_OK) {
     return;
   }
@@ -57,7 +57,7 @@ TEST(BinlogInstanceDAO, add_instance)
 {
   MySQLConnection connection;
   // TODO 要注释掉连接信息,测试中先在单测中保留
-  int ret = connection.connect("11.124.9.19", 10011, "logproxy@mysql#ob4x.admin", "123456", "binlog_cluster");
+  int ret = connection.init("11.124.9.19", 10011, "logproxy@mysql#ob4x.admin", "123456", "binlog_cluster");
   if (ret != OMS_OK) {
     return;
   }
@@ -85,7 +85,7 @@ TEST(PrimaryInstance, query_master_instance)
 {
   MySQLConnection connection;
   // TODO 要注释掉连接信息,测试中先在单测中保留
-  int ret = connection.connect("11.124.9.19", 10011, "logproxy@mysql#ob4x.admin", "123456", "binlog_cluster");
+  int ret = connection.init("11.124.9.19", 10011, "logproxy@mysql#ob4x.admin", "123456", "binlog_cluster");
   if (ret != OMS_OK) {
     return;
   }

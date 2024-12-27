@@ -17,9 +17,11 @@
 #include "obcdcaccess/obcdc_factory.h"
 #include "obaccess/ob_access.h"
 #include "binlog_storage.h"
-#include "binlog_convert.h"
 #include "clog_reader_routine.h"
 #include "instance_socket_listener.h"
+#include "parallel_convert.h"
+
+#include <env.h>
 
 namespace oceanbase::binlog {
 
@@ -56,10 +58,10 @@ private:
 
 private:
   IObCdcAccess* _obcdc = nullptr;
-  BlockingQueue<ILogRecord*> _queue{Config::instance().record_queue_size.val()};
-  BlockingQueue<ObLogEvent*> _event_queue{Config::instance().record_queue_size.val()};
+  BlockingQueue<ILogRecord*> _queue{s_meta.binlog_config()->record_queue_size()};
+  BlockingQueue<ObLogEvent*> _event_queue{s_meta.binlog_config()->record_queue_size()};
   ClogReaderRoutine _reader{*this, _queue};
-  BinlogConvert _convert{*this, _queue, _event_queue};
+  ParallelConvert _convert{*this, _queue, _event_queue};
   BinlogStorage _storage{*this, _event_queue};
 };
 }  // namespace oceanbase::binlog

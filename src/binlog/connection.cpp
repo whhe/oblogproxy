@@ -289,10 +289,9 @@ IoResult Connection::process_handshake_response()
     _auth_info.password = auth_response;
     _auth_info.passwd_used = auth_response.empty() ? false : true;
 
-    OMS_INFO("Auth user {} with password({}): {}, client_plugin_name: {}",
+    OMS_INFO("Auth user {} with password({}), client_plugin_name: {}",
         user_,
         _auth_info.passwd_used ? "true" : "false",
-        _auth_info.password,
         client_plugin_name);
     if (strcmp(client_plugin_name.c_str(), "mysql_native_password") != 0) {
       return send_err_packet(BINLOG_ACCESS_DENIED_ERROR, "Unsupported client plugin: " + client_plugin_name, "28000");
@@ -475,7 +474,7 @@ IoResult Connection::auth()
         "Access denied for user " + _auth_info.user + " (using password: " + _auth_info.password_used() + ")",
         "28000");
   } else if (!check_scramble_sha1(_auth_info.password.c_str(), _auth_info.scramble, password_sha2.c_str())) {
-    OMS_ERROR("Auth failed for user [{}] with password [{}]", _auth_info.user, _auth_info.password);
+    OMS_ERROR("Auth failed for user [{}] with password", _auth_info.user);
     return send_err_packet(BINLOG_ACCESS_DENIED_ERROR,
         "Access denied for user " + _auth_info.user + " (using password: " + _auth_info.password_used() + ")",
         "28000");

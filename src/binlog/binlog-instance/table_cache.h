@@ -88,6 +88,7 @@ struct TableName {
 class TableCache {
 private:
   std::unordered_map<TableName, uint64_t, TableName> _cache;
+  std::mutex _mutex;
 
 public:
   uint64_t assign_new_table_id();

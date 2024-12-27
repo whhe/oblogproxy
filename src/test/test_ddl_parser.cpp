@@ -412,7 +412,7 @@ TEST(DDLParser, init)
       "partition p126,\n"
       "partition p127);";
   std::string result;
-  sql_parser.parser(origin, result);
+  sql_parser.parse(origin, result);
   std::string excepted =
       "CREATE TABLE `bank_business_table`(\n"
       "\t`MAIN_CUST_INR_ID` CHAR (20) CHARSET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT '主客户内部编号',\n"
@@ -971,7 +971,7 @@ TEST(DDLParser, failed)
       "USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0\n"
       " partition by key(txn_inr_id)xxxxx\n;";
   std::string result;
-  int ret = sql_parser.parser(origin, result);
+  int ret = sql_parser.parse(origin, result);
   ASSERT_EQ(OMS_FAILED, ret);
   ASSERT_EQ("", result);
 }
@@ -984,7 +984,7 @@ TEST(DDLParser, create_database)
   sql_parser.init();
   std::string origin = "create database obcdc_db;";
   std::string result;
-  int ret = sql_parser.parser(origin, result);
+  int ret = sql_parser.parse(origin, result);
   ASSERT_EQ(OMS_FAILED, ret);
   ASSERT_EQ("", result);
 }
@@ -997,7 +997,7 @@ TEST(DDLParser, drop_table)
   sql_parser.init();
   std::string origin = "DROP TABLE `test`.`test005`";
   std::string result;
-  int ret = sql_parser.parser(origin, result);
+  int ret = sql_parser.parse(origin, result);
   ASSERT_EQ(OMS_OK, ret);
   //  ASSERT_EQ("", result);
 }

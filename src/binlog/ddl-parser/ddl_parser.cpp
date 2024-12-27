@@ -10,16 +10,28 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#ifndef BUILD_OPENSOURCE
 #include "ddl_parser.h"
+
+#ifndef BUILD_OPENSOURCE
 #include "str.h"
 #include "guard.hpp"
 #include <dlfcn.h>
+#endif
 
 namespace oceanbase::binlog {
 
+DdlParser::~DdlParser()
+{
+#ifndef BUILD_OPENSOURCE
+  if (_jvm != nullptr) {
+    _jvm->DestroyJavaVM();
+  }
+#endif
+}
+
 int DdlParser::init()
 {
+#ifndef BUILD_OPENSOURCE
   JavaVMInitArgs vm_args;
   memset(&vm_args, 0, sizeof(vm_args));
   std::string options_str = logproxy::Config::instance().binlog_ddl_convert_jvm_options.val();
@@ -71,9 +83,47 @@ int DdlParser::init()
     return OMS_FAILED;
   }
   OMS_STREAM_INFO << "Successfully initialized the ddl convert function";
+#endif
   return OMS_OK;
 }
 
+int DdlParser::parse(std::string& origin, std::string& result)
+{
+#ifdef BUILD_OPENSOURCE
+  std::string err_msg;
+  int ret = etransfer::tool::ConvertTool::Parse(origin, "", true, result, err_msg);
+  if (ret != 0) {
+    OMS_WARN("Failed to convert ddl sql:[ {} ], error message: {}", origin, err_msg);
+    return OMS_FAILED;
+  }
+  OMS_INFO("convert ddl success, origin: [ {} ], result: [ {} ]", origin, result);
+#else
+  std::lock_guard<std::mutex> lock(_jvm_mutex);
+  if (JNI_OK != this->_jvm->AttachCurrentThread((void**)&_env, nullptr)) {
+    OMS_STREAM_ERROR << "Failed to Attach thread";
+    return OMS_FAILED;
+  }
+  jstring sql = string_2_jstring(_env, origin);
+  jstring default_schema = string_2_jstring(_env, "");
+  jboolean is_case_sensitive = JNI_TRUE;
+  OMS_STREAM_INFO << "parser:[" << jstring_2_string(this->_env, sql) << ","
+                  << jstring_2_string(this->_env, default_schema) << "]";
+  auto ret = _env->CallStaticObjectMethod(_cls, _mid, sql, default_schema, is_case_sensitive);
+  result = jstring_2_string(_env, (jstring)ret);
+  if (print_jni_exception_info() != OMS_OK) {
+    OMS_STREAM_ERROR << "Failed to call etransfer JNI";
+    this->_jvm->DetachCurrentThread();
+    return OMS_FAILED;
+  }
+  _env->DeleteLocalRef(sql);
+  _env->DeleteLocalRef(default_schema);
+  this->_jvm->DetachCurrentThread();
+#endif
+  // When the converted SQL is empty, the conversion is considered to have failed
+  return result.empty() ? OMS_FAILED : OMS_OK;
+}
+
+#ifndef BUILD_OPENSOURCE
 void DdlParser::jni_error_handler(jint ret) const
 {
   switch (ret) {
@@ -98,30 +148,6 @@ void DdlParser::jni_error_handler(jint ret) const
   }
 }
 
-int DdlParser::parser(std::string& origin, std::string& result)
-{
-  if (JNI_OK != this->_jvm->AttachCurrentThread((void**)&_env, nullptr)) {
-    OMS_STREAM_ERROR << "Failed to Attach thread";
-    return OMS_FAILED;
-  }
-  jstring sql = string_2_jstring(_env, origin);
-  jstring default_schema = string_2_jstring(_env, "");
-  jboolean is_case_sensitive = JNI_TRUE;
-  OMS_STREAM_INFO << "parser:[" << jstring_2_string(this->_env, sql) << ","
-                  << jstring_2_string(this->_env, default_schema) << "]";
-  auto ret = _env->CallStaticObjectMethod(_cls, _mid, sql, default_schema, is_case_sensitive);
-  result = jstring_2_string(_env, (jstring)ret);
-  if (print_jni_exception_info() != OMS_OK) {
-    OMS_STREAM_ERROR << "Failed to call etransfer JNI";
-    this->_jvm->DetachCurrentThread();
-    return OMS_FAILED;
-  }
-  _env->DeleteLocalRef(sql);
-  _env->DeleteLocalRef(default_schema);
-  this->_jvm->DetachCurrentThread();
-  return OMS_OK;
-}
-
 bool DdlParser::print_jni_exception_info()
 {
   // Check if any exception is thrown
@@ -141,13 +167,6 @@ bool DdlParser::print_jni_exception_info()
   return OMS_OK;
 }
 
-DdlParser::~DdlParser()
-{
-  if (_jvm != nullptr) {
-    _jvm->DestroyJavaVM();
-  }
-}
-
 std::string DdlParser::jstring_2_string(JNIEnv* env, jstring jstr)
 {
   if (!jstr) {
@@ -163,6 +182,6 @@ jstring DdlParser::string_2_jstring(JNIEnv* env, const std::string& str)
 {
   return env->NewStringUTF(str.c_str());
 }
+#endif
 
 }  // namespace oceanbase::binlog
-#endif

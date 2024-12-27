@@ -35,15 +35,10 @@ int BinlogManager::run_foreground()
 
   uint16_t sys_var_listen_port = s_config.service_port.val();
   uint32_t sys_var_nof_work_threads = s_config.binlog_nof_work_threads.val();
-  uint32_t sys_var_bc_work_threads = s_config.binlog_bc_work_threads.val();
   uint32_t sys_var_sql_work_threads = s_config.binlog_sql_work_threads.val();
   uint16_t start_tcp_port = s_config.start_tcp_port.val();
   uint16_t reserved_ports_num = s_config.reserved_ports_num.val();
-  if (env_init(sys_var_nof_work_threads,
-          sys_var_bc_work_threads,
-          sys_var_sql_work_threads,
-          start_tcp_port,
-          reserved_ports_num) != OMS_OK) {
+  if (env_init(sys_var_nof_work_threads, sys_var_sql_work_threads, start_tcp_port, reserved_ports_num) != OMS_OK) {
     OMS_ERROR("Failed to start OceanBase binlog server");
     return OMS_FAILED;
   }
@@ -108,7 +103,7 @@ int init_global_config()
   }
 
   s_config.init(configs);
-  OMS_INFO("Success init config according to global configs:\n {}", s_config.to_string(false));
+  OMS_INFO("Success init config according to global configs:\n {}", s_config.to_string(false, true));
   return OMS_OK;
 }
 
